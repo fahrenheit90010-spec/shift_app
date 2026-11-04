@@ -1,0 +1,188 @@
+{
+    "schema_version": "1.0",
+    "holidays": [
+        {
+            "date": "2026-01-01",
+            "name": "Новогодние каникулы",
+            "is_workday": false
+        },
+        {
+            "date": "2026-01-02",
+            "name": "Новогодние каникулы",
+            "is_workday": false
+        },
+        {
+            "date": "2026-01-05",
+            "name": "Новогодние каникулы",
+            "is_workday": false
+        },
+        {
+            "date": "2026-01-06",
+            "name": "Новогодние каникулы",
+            "is_workday": false
+        },
+        {
+            "date": "2026-01-07",
+            "name": "Рождество Христово",
+            "is_workday": false
+        },
+        {
+            "date": "2026-01-08",
+            "name": "Новогодние каникулы",
+            "is_workday": false
+        },
+        {
+            "date": "2026-01-09",
+            "name": "Перенесено с 3 января",
+            "is_workday": false,
+            "transfer_from": "2026-01-03",
+            "transfer_reason": "Новогодние каникулы"
+        },
+        {
+            "date": "2026-02-23",
+            "name": "День защитника Отечества",
+            "is_workday": false
+        },
+        {
+            "date": "2026-03-08",
+            "name": "Международный женский день",
+            "is_workday": false
+        },
+        {
+            "date": "2026-05-01",
+            "name": "Праздник Весны и Труда",
+            "is_workday": false
+        },
+        {
+            "date": "2026-05-09",
+            "name": "День Победы",
+            "is_workday": false
+        },
+        {
+            "date": "2026-06-12",
+            "name": "День России",
+            "is_workday": false
+        },
+        {
+            "date": "2026-11-04",
+            "name": "День народного единства",
+            "is_workday": false
+        },
+        {
+            "date": "2026-12-31",
+            "name": "Перенесено с 4 января",
+            "is_workday": false,
+            "transfer_from": "2026-01-04",
+            "transfer_reason": "Новогодние каникулы"
+        },
+        {
+            "date": "2027-01-01",
+            "name": "Новогодние каникулы",
+            "is_workday": false
+        },
+        {
+            "date": "2027-01-04",
+            "name": "Новогодние каникулы",
+            "is_workday": false
+        },
+        {
+            "date": "2027-01-05",
+            "name": "Новогодние каникулы",
+            "is_workday": false
+        },
+        {
+            "date": "2027-01-06",
+            "name": "Новогодние каникулы",
+            "is_workday": false
+        },
+        {
+            "date": "2027-01-07",
+            "name": "Рождество Христово",
+            "is_workday": false
+        },
+        {
+            "date": "2027-01-08",
+            "name": "Новогодние каникулы",
+            "is_workday": false
+        },
+        {
+            "date": "2027-02-20",
+            "name": "Рабочая суббота (перенос с 20 февраля на 22 февраля)",
+            "is_workday": true,
+            "transfer_from": "2027-02-20",
+            "transfer_reason": "Перенос на 22 февраля"
+        },
+        {
+            "date": "2027-02-22",
+            "name": "Перенесено с 20 февраля",
+            "is_workday": false,
+            "transfer_from": "2027-02-20",
+            "transfer_reason": "День защитника Отечества"
+        },
+        {
+            "date": "2027-02-23",
+            "name": "День защитника Отечества",
+            "is_workday": false
+        },
+        {
+            "date": "2027-03-08",
+            "name": "Международный женский день",
+            "is_workday": false
+        },
+        {
+            "date": "2027-05-01",
+            "name": "Праздник Весны и Труда",
+            "is_workday": false
+        },
+        {
+            "date": "2027-05-03",
+            "name": "Перенесено с 1 мая (суббота)",
+            "is_workday": false,
+            "transfer_from": "2027-05-01",
+            "transfer_reason": "Праздник Весны и Труда"
+        },
+        {
+            "date": "2027-05-09",
+            "name": "День Победы",
+            "is_workday": false
+        },
+        {
+            "date": "2027-05-10",
+            "name": "Перенесено с 9 мая (воскресенье)",
+            "is_workday": false,
+            "transfer_from": "2027-05-09",
+            "transfer_reason": "День Победы"
+        },
+        {
+            "date": "2027-06-12",
+            "name": "День России",
+            "is_workday": false
+        },
+        {
+            "date": "2027-06-14",
+            "name": "Перенесено с 12 июня (суббота)",
+            "is_workday": false,
+            "transfer_from": "2027-06-12",
+            "transfer_reason": "День России"
+        },
+        {
+            "date": "2027-11-04",
+            "name": "День народного единства",
+            "is_workday": false
+        },
+        {
+            "date": "2027-11-05",
+            "name": "Перенесено с 2 января",
+            "is_workday": false,
+            "transfer_from": "2027-01-02",
+            "transfer_reason": "Новогодние каникулы"
+        },
+        {
+            "date": "2027-12-31",
+            "name": "Перенесено с 3 января",
+            "is_workday": false,
+            "transfer_from": "2027-01-03",
+            "transfer_reason": "Новогодние каникулы"
+        }
+    ]
+}
