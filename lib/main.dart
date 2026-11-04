@@ -2,9 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:table_calendar/table_calendar.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'data/models.dart';
 import 'data/holiday_loader.dart';
-import 'package:flutter_localizations/flutter_localizations.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -50,7 +50,7 @@ class _HomeScreenState extends State<HomeScreen> {
   DateTime? _selectedDay;
 
   final List<ShiftType> _shiftTypes = ShiftType.defaults();
-  final List<Rate> _rates = Rate.defaults();
+  List<Rate> _rates = [];
   final Map<String, ShiftEntry> _shifts = {};
   List<Holiday> _holidays = [];
 
@@ -63,8 +63,16 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _loadData() async {
     final loadedHolidays = await loadHolidays();
     final prefs = await SharedPreferences.getInstance();
-    final savedShifts = prefs.getStringList('shifts') ?? [];
 
+    final savedRates = prefs.getStringList('rates');
+    List<Rate> rates;
+    if (savedRates == null || savedRates.isEmpty) {
+      rates = Rate.defaults();
+    } else {
+      rates = savedRates.map((s) => RateStorage.fromStorageString(s)).toList();
+    }
+
+    final savedShifts = prefs.getStringList('shifts') ?? [];
     final map = <String, ShiftEntry>{};
     for (final entry in savedShifts) {
       final parts = entry.split('::');
@@ -75,6 +83,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     setState(() {
       _holidays = loadedHolidays;
+      _rates = rates;
       _shifts.addAll(map);
     });
   }
@@ -85,6 +94,12 @@ class _HomeScreenState extends State<HomeScreen> {
         .map((e) => '${e.key}::${e.value.toStorageString()}')
         .toList();
     await prefs.setStringList('shifts', list);
+  }
+
+  Future<void> _saveRates() async {
+    final prefs = await SharedPreferences.getInstance();
+    final list = _rates.map((r) => RateStorage.toStorageString(r)).toList();
+    await prefs.setStringList('rates', list);
   }
 
   String _dateKey(DateTime day) {
@@ -130,6 +145,12 @@ class _HomeScreenState extends State<HomeScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Мой график'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: _openSettings,
+          ),
+        ],
       ),
       body: SingleChildScrollView(
         child: Column(
@@ -139,9 +160,9 @@ class _HomeScreenState extends State<HomeScreen> {
               lastDay: DateTime.utc(2030, 12, 31),
               focusedDay: _focusedDay,
               selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
-                          onHeaderTapped: (focusedDay) {
-              _showCustomMonthPicker(context, focusedDay);
-            },
+              onHeaderTapped: (focusedDay) {
+                _showCustomMonthPicker(context, focusedDay);
+              },
               onDaySelected: (selectedDay, focusedDay) {
                 setState(() {
                   _selectedDay = selectedDay;
@@ -153,6 +174,7 @@ class _HomeScreenState extends State<HomeScreen> {
               locale: 'ru_RU',
               startingDayOfWeek: StartingDayOfWeek.monday,
               daysOfWeekHeight: 24.0,
+              availableGestures: AvailableGestures.none,
               calendarBuilders: CalendarBuilders(
                 defaultBuilder: (context, day, focusedDay) => _buildDayCell(day),
                 todayBuilder: (context, day, focusedDay) => _buildDayCell(day),
@@ -167,8 +189,26 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     );
   }
+
+  void _openSettings() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => SettingsScreen(
+          rates: _rates,
+          onRatesChanged: (newRates) async {
+            setState(() {
+              _rates = newRates;
+            });
+            await _saveRates();
+          },
+        ),
+      ),
+    );
+  }
+
   void _showCustomMonthPicker(BuildContext context, DateTime initialDate) {
-    final months = [
+    const months = [
       'Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн',
       'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек'
     ];
@@ -542,5 +582,213 @@ class _HomeScreenState extends State<HomeScreen> {
       case RateType.perMonth:
         return rate.value / 21;
     }
+  }
+}
+
+class SettingsScreen extends StatefulWidget {
+  final List<Rate> rates;
+  final ValueChanged<List<Rate>> onRatesChanged;
+
+  const SettingsScreen({
+    super.key,
+    required this.rates,
+    required this.onRatesChanged,
+  });
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  late List<Rate> _rates;
+
+  @override
+  void initState() {
+    super.initState();
+    _rates = List.from(widget.rates);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Настройки'),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          const Text('Ставки', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          ..._rates.map((r) => _buildRateTile(r)),
+          const SizedBox(height: 8),
+          ElevatedButton.icon(
+            onPressed: _addRate,
+            icon: const Icon(Icons.add),
+            label: const Text('Добавить ставку'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRateTile(Rate rate) {
+    final typeLabel = _rateTypeLabel(rate.type);
+    return Card(
+      child: ListTile(
+        title: Text(rate.name),
+        subtitle: Text('$typeLabel — ${rate.value.toStringAsFixed(0)} ₽'),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.edit),
+              onPressed: () => _editRate(rate),
+            ),
+            IconButton(
+              icon: const Icon(Icons.delete, color: Colors.red),
+              onPressed: () => _deleteRate(rate),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _rateTypeLabel(RateType type) {
+    switch (type) {
+      case RateType.perHour:
+        return 'за час';
+      case RateType.perShift:
+        return 'за смену';
+      case RateType.perWeek:
+        return 'за неделю';
+      case RateType.perMonth:
+        return 'за месяц';
+    }
+  }
+
+  void _addRate() {
+    _showRateDialog(null);
+  }
+
+  void _editRate(Rate rate) {
+    _showRateDialog(rate);
+  }
+
+  void _deleteRate(Rate rate) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Удалить ставку?'),
+        content: Text('Ставка «${rate.name}» будет удалена.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Отмена'),
+          ),
+          TextButton(
+            onPressed: () {
+              setState(() {
+                _rates.removeWhere((r) => r.id == rate.id);
+              });
+              widget.onRatesChanged(_rates);
+              Navigator.pop(context);
+            },
+            child: const Text('Удалить', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showRateDialog(Rate? existing) {
+    final nameController = TextEditingController(text: existing?.name ?? '');
+    final valueController = TextEditingController(
+      text: existing?.value.toStringAsFixed(0) ?? '',
+    );
+    RateType selectedType = existing?.type ?? RateType.perHour;
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: Text(existing == null ? 'Новая ставка' : 'Редактировать ставку'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: nameController,
+                    decoration: const InputDecoration(labelText: 'Название'),
+                  ),
+                  const SizedBox(height: 8),
+                  DropdownButtonFormField<RateType>(
+                    value: selectedType,
+                    decoration: const InputDecoration(labelText: 'Тип расчёта'),
+                    items: RateType.values.map((t) {
+                      return DropdownMenuItem(
+                        value: t,
+                        child: Text(_rateTypeLabel(t)),
+                      );
+                    }).toList(),
+                    onChanged: (value) {
+                      if (value != null) {
+                        setDialogState(() {
+                          selectedType = value;
+                        });
+                      }
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: valueController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(labelText: 'Значение (₽)'),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Отмена'),
+                ),
+                TextButton(
+                  onPressed: () {
+                    final name = nameController.text.trim();
+                    final value = double.tryParse(valueController.text.trim()) ?? 0;
+                    if (name.isEmpty || value <= 0) return;
+
+                    setState(() {
+                      if (existing == null) {
+                        _rates.add(Rate(
+                          id: 'rate_${DateTime.now().millisecondsSinceEpoch}',
+                          name: name,
+                          type: selectedType,
+                          value: value,
+                        ));
+                      } else {
+                        final index = _rates.indexWhere((r) => r.id == existing.id);
+                        if (index >= 0) {
+                          _rates[index] = Rate(
+                            id: existing.id,
+                            name: name,
+                            type: selectedType,
+                            value: value,
+                          );
+                        }
+                      }
+                    });
+                    widget.onRatesChanged(_rates);
+                    Navigator.pop(context);
+                  },
+                  child: const Text('Сохранить'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 }

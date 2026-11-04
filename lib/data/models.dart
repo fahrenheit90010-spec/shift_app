@@ -29,13 +29,13 @@ class ShiftType {
   });
 
   // Предустановленные типы
-static List<ShiftType> defaults() => [
-  const ShiftType(id: 'day', name: 'День', letter: 'Д', color: Color(0xFF90CAF9), plannedHours: 8, countInSalary: true),      // светло-синий
-  const ShiftType(id: 'night', name: 'Ночь', letter: 'Н', color: Color(0xFFCE93D8), plannedHours: 12, countInSalary: true),     // светло-фиолетовый
-  const ShiftType(id: 'daily', name: 'Сутки', letter: 'С', color: Color(0xFFFFCC80), plannedHours: 24, countInSalary: true),     // светло-оранжевый
-  const ShiftType(id: 'sick', name: 'Больничный', letter: 'Б', color: Color(0xFFEF9A9A), plannedHours: 0, countInSalary: false), // светло-красный
-  const ShiftType(id: 'vacation', name: 'Отпуск', letter: 'О', color: Color(0xFFA5D6A7), plannedHours: 0, countInSalary: false), // светло-зелёный
-];
+  static List<ShiftType> defaults() => [
+    const ShiftType(id: 'day', name: 'День', letter: 'Д', color: Color(0xFF90CAF9), plannedHours: 8, countInSalary: true),      // светло-синий
+    const ShiftType(id: 'night', name: 'Ночь', letter: 'Н', color: Color(0xFFCE93D8), plannedHours: 12, countInSalary: true),     // светло-фиолетовый
+    const ShiftType(id: 'daily', name: 'Сутки', letter: 'С', color: Color(0xFFFFCC80), plannedHours: 24, countInSalary: true),     // светло-оранжевый
+    const ShiftType(id: 'sick', name: 'Больничный', letter: 'Б', color: Color(0xFFEF9A9A), plannedHours: 0, countInSalary: false), // светло-красный
+    const ShiftType(id: 'vacation', name: 'Отпуск', letter: 'О', color: Color(0xFFA5D6A7), plannedHours: 0, countInSalary: false), // светло-зелёный
+  ];
 
   // Для сохранения в JSON (потом пригодится)
   Map<String, dynamic> toJson() => {
@@ -78,7 +78,24 @@ class Rate {
     const Rate(id: 'night_rate', name: 'Ночная', type: RateType.perHour, value: 400),
     const Rate(id: 'daily_rate', name: 'Сутки', type: RateType.perShift, value: 5000),
   ];
-}   // <-- ЗАКРЫВАЕМ КЛАСС Rate
+}
+
+// Для сохранения/загрузки ставок в shared_preferences
+class RateStorage {
+  static String toStorageString(Rate rate) {
+    return '${rate.id}|${rate.name}|${rate.type.index}|${rate.value}';
+  }
+
+  static Rate fromStorageString(String s) {
+    final parts = s.split('|');
+    return Rate(
+      id: parts[0],
+      name: parts[1],
+      type: RateType.values[int.parse(parts[2])],
+      value: double.parse(parts[3]),
+    );
+  }
+}
 
 // Запись смены: тип + фактические часы + ставка
 class ShiftEntry {
@@ -105,5 +122,4 @@ class ShiftEntry {
       rateId: parts.length > 2 && parts[2].isNotEmpty ? parts[2] : null,
     );
   }
-}   // <-- ЗАКРЫВАЕМ КЛАСС ShiftEntry
-
+}
