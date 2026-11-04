@@ -4,6 +4,7 @@ import 'package:intl/date_symbol_data_local.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'data/models.dart';
 import 'data/holiday_loader.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -22,6 +23,16 @@ class ShiftApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
         useMaterial3: true,
       ),
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: const [
+        Locale('ru'),
+        Locale('en'),
+      ],
+      locale: const Locale('ru'),
       home: const HomeScreen(),
     );
   }
@@ -120,40 +131,127 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: const Text('Мой график'),
       ),
-      body: Column(
-        children: [
-          TableCalendar(
-            firstDay: DateTime.utc(2020, 1, 1),
-            lastDay: DateTime.utc(2030, 12, 31),
-            focusedDay: _focusedDay,
-            selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
-            onDaySelected: (selectedDay, focusedDay) {
-              setState(() {
-                _selectedDay = selectedDay;
-                _focusedDay = focusedDay;
-              });
+      body: SingleChildScrollView(
+        child: Column(
+          children: [
+            TableCalendar(
+              firstDay: DateTime.utc(2020, 1, 1),
+              lastDay: DateTime.utc(2030, 12, 31),
+              focusedDay: _focusedDay,
+              selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
+                          onHeaderTapped: (focusedDay) {
+              _showCustomMonthPicker(context, focusedDay);
             },
-            calendarFormat: CalendarFormat.month,
-            availableCalendarFormats: const {CalendarFormat.month: 'Месяц'},
-            locale: 'ru_RU',
-            startingDayOfWeek: StartingDayOfWeek.monday,
-            daysOfWeekHeight: 24.0,
-            calendarBuilders: CalendarBuilders(
-              defaultBuilder: (context, day, focusedDay) => _buildDayCell(day),
-              todayBuilder: (context, day, focusedDay) => _buildDayCell(day),
-              selectedBuilder: (context, day, focusedDay) => _buildDayCell(day, isSelected: true),
-              outsideBuilder: (context, day, focusedDay) => _buildDayCell(day, isOutside: true),
-            ),
-          ),
-          const SizedBox(height: 8),
-          if (_selectedDay != null)
-            Expanded(
-              child: SingleChildScrollView(
-                child: _buildBottomPanel(),
+              onDaySelected: (selectedDay, focusedDay) {
+                setState(() {
+                  _selectedDay = selectedDay;
+                  _focusedDay = focusedDay;
+                });
+              },
+              calendarFormat: CalendarFormat.month,
+              availableCalendarFormats: const {CalendarFormat.month: 'Месяц'},
+              locale: 'ru_RU',
+              startingDayOfWeek: StartingDayOfWeek.monday,
+              daysOfWeekHeight: 24.0,
+              calendarBuilders: CalendarBuilders(
+                defaultBuilder: (context, day, focusedDay) => _buildDayCell(day),
+                todayBuilder: (context, day, focusedDay) => _buildDayCell(day),
+                selectedBuilder: (context, day, focusedDay) => _buildDayCell(day, isSelected: true),
+                outsideBuilder: (context, day, focusedDay) => _buildDayCell(day, isOutside: true),
               ),
             ),
-        ],
+            const SizedBox(height: 8),
+            if (_selectedDay != null) _buildBottomPanel(),
+          ],
+        ),
       ),
+    );
+  }
+  void _showCustomMonthPicker(BuildContext context, DateTime initialDate) {
+    final months = [
+      'Янв', 'Фев', 'Мар', 'Апр', 'Май', 'Июн',
+      'Июл', 'Авг', 'Сен', 'Окт', 'Ноя', 'Дек'
+    ];
+    int selectedYear = initialDate.year;
+    int selectedMonth = initialDate.month;
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.chevron_left),
+                    onPressed: () {
+                      setDialogState(() {
+                        selectedYear--;
+                      });
+                    },
+                  ),
+                  Text('$selectedYear'),
+                  IconButton(
+                    icon: const Icon(Icons.chevron_right),
+                    onPressed: () {
+                      setDialogState(() {
+                        selectedYear++;
+                      });
+                    },
+                  ),
+                ],
+              ),
+              content: SizedBox(
+                width: 300,
+                height: 300,
+                child: GridView.builder(
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 3,
+                    childAspectRatio: 1.5,
+                  ),
+                  itemCount: 12,
+                  itemBuilder: (context, index) {
+                    final monthNumber = index + 1;
+                    final isSelected = monthNumber == selectedMonth;
+                    return GestureDetector(
+                      onTap: () {
+                        setState(() {
+                          _focusedDay = DateTime(selectedYear, monthNumber, 1);
+                          _selectedDay = null;
+                        });
+                        Navigator.pop(context);
+                      },
+                      child: Container(
+                        margin: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          color: isSelected ? Colors.blue.shade100 : null,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Center(
+                          child: Text(
+                            months[index],
+                            style: TextStyle(
+                              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Отмена'),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 
