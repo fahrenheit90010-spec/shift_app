@@ -12,17 +12,98 @@ Future<void> main() async {
   runApp(const ShiftApp());
 }
 
-class ShiftApp extends StatelessWidget {
+// Тёмная тема: приглушённые цвета, без ярких акцентов
+ThemeData _buildDarkTheme() {
+  return ThemeData(
+    brightness: Brightness.dark,
+    useMaterial3: true,
+    scaffoldBackgroundColor: const Color(0xFF121212),
+    colorScheme: const ColorScheme.dark(
+      primary: Color(0xFF64B5F6),
+      secondary: Color(0xFF64B5F6),
+      surface: Color(0xFF1E1E1E),
+      onSurface: Color(0xFFE0E0E0),
+    ),
+    appBarTheme: const AppBarTheme(
+      backgroundColor: Color(0xFF1E1E1E),
+      foregroundColor: Color(0xFFE0E0E0),
+      elevation: 0,
+    ),
+    cardColor: const Color(0xFF1E1E1E),
+    dialogTheme: const DialogThemeData(
+      backgroundColor: Color(0xFF1E1E1E),
+    ),
+    textTheme: const TextTheme(
+      bodyMedium: TextStyle(color: Color(0xFFE0E0E0)),
+      bodySmall: TextStyle(color: Color(0xFF9E9E9E)),
+    ),
+  );
+}
+
+// Светлая тема (как сейчас, но чуть мягче)
+ThemeData _buildLightTheme() {
+  return ThemeData(
+    useMaterial3: true,
+    colorScheme: ColorScheme.fromSeed(
+      seedColor: const Color(0xFF64B5F6),
+      brightness: Brightness.light,
+    ),
+    scaffoldBackgroundColor: Colors.white,
+    appBarTheme: const AppBarTheme(
+      backgroundColor: Colors.white,
+      foregroundColor: Colors.black,
+      elevation: 0,
+    ),
+  );
+}
+
+class ShiftApp extends StatefulWidget {
   const ShiftApp({super.key});
+
+  @override
+  State<ShiftApp> createState() => _ShiftAppState();
+}
+
+class _ShiftAppState extends State<ShiftApp> {
+  ThemeMode _themeMode = ThemeMode.light;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadTheme();
+  }
+
+  Future<void> _loadTheme() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString('theme_mode') ?? 'light';
+    setState(() {
+      _themeMode = saved == 'dark'
+          ? ThemeMode.dark
+          : saved == 'system'
+              ? ThemeMode.system
+              : ThemeMode.light;
+    });
+  }
+
+  Future<void> _setTheme(ThemeMode mode) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('theme_mode', mode == ThemeMode.dark
+        ? 'dark'
+        : mode == ThemeMode.system
+            ? 'system'
+            : 'light');
+    setState(() {
+      _themeMode = mode;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'График смен: Календарь и Зарплата',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
-        useMaterial3: true,
-      ),
+      theme: _buildLightTheme(),
+      darkTheme: _buildDarkTheme(),
+      themeMode: _themeMode,
       localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,
         GlobalWidgetsLocalizations.delegate,
@@ -33,13 +114,23 @@ class ShiftApp extends StatelessWidget {
         Locale('en'),
       ],
       locale: const Locale('ru'),
-      home: const HomeScreen(),
+      home: HomeScreen(
+        themeMode: _themeMode,
+        onThemeChanged: _setTheme,
+      ),
     );
   }
 }
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  final ThemeMode themeMode;
+  final ValueChanged<ThemeMode> onThemeChanged;
+
+  const HomeScreen({
+    super.key,
+    required this.themeMode,
+    required this.onThemeChanged,
+  });
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -53,6 +144,13 @@ class _HomeScreenState extends State<HomeScreen> {
   List<Rate> _rates = [];
   final Map<String, ShiftEntry> _shifts = {};
   List<Holiday> _holidays = [];
+
+  bool get _isDark => Theme.of(context).brightness == Brightness.dark;
+
+  Color get _bgColor => _isDark ? const Color(0xFF1E1E1E) : Colors.grey.shade100;
+  Color get _textColor => _isDark ? const Color(0xFFE0E0E0) : Colors.black;
+  Color get _subtextColor => _isDark ? const Color(0xFF9E9E9E) : Colors.grey.shade700;
+  Color get _redColor => _isDark ? const Color(0xFFEF9A9A) : Colors.red;
 
   @override
   void initState() {
@@ -175,11 +273,40 @@ class _HomeScreenState extends State<HomeScreen> {
               startingDayOfWeek: StartingDayOfWeek.monday,
               daysOfWeekHeight: 24.0,
               availableGestures: AvailableGestures.none,
+              calendarStyle: CalendarStyle(
+                defaultTextStyle: TextStyle(color: _textColor),
+                weekendTextStyle: TextStyle(color: _redColor),
+                outsideTextStyle: TextStyle(color: _textColor.withValues(alpha: 0.3)),
+                todayDecoration: BoxDecoration(
+                  border: Border.all(color: _textColor, width: 1),
+                  shape: BoxShape.circle,
+                ),
+                selectedDecoration: BoxDecoration(
+                  border: Border.all(color: _textColor, width: 2),
+                  shape: BoxShape.circle,
+                ),
+                markersMaxCount: 0,
+              ),
               calendarBuilders: CalendarBuilders(
                 defaultBuilder: (context, day, focusedDay) => _buildDayCell(day),
                 todayBuilder: (context, day, focusedDay) => _buildDayCell(day),
                 selectedBuilder: (context, day, focusedDay) => _buildDayCell(day, isSelected: true),
                 outsideBuilder: (context, day, focusedDay) => _buildDayCell(day, isOutside: true),
+              ),
+              headerStyle: HeaderStyle(
+                formatButtonVisible: false,
+                titleCentered: true,
+                titleTextStyle: TextStyle(
+                  color: _textColor,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+                leftChevronIcon: Icon(Icons.chevron_left, color: _textColor),
+                rightChevronIcon: Icon(Icons.chevron_right, color: _textColor),
+              ),
+              daysOfWeekStyle: DaysOfWeekStyle(
+                weekdayStyle: TextStyle(color: _subtextColor),
+                weekendStyle: TextStyle(color: _redColor),
               ),
             ),
             const SizedBox(height: 8),
@@ -196,6 +323,8 @@ class _HomeScreenState extends State<HomeScreen> {
       MaterialPageRoute(
         builder: (context) => SettingsScreen(
           rates: _rates,
+          themeMode: widget.themeMode,
+          onThemeChanged: widget.onThemeChanged,
           onRatesChanged: (newRates) async {
             setState(() {
               _rates = newRates;
@@ -266,13 +395,16 @@ class _HomeScreenState extends State<HomeScreen> {
                       child: Container(
                         margin: const EdgeInsets.all(4),
                         decoration: BoxDecoration(
-                          color: isSelected ? Colors.blue.shade100 : null,
+                          color: isSelected
+                              ? (_isDark ? const Color(0xFF64B5F6).withValues(alpha: 0.3) : Colors.blue.shade100)
+                              : null,
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: Center(
                           child: Text(
                             months[index],
                             style: TextStyle(
+                              color: _textColor,
                               fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
                             ),
                           ),
@@ -310,8 +442,8 @@ class _HomeScreenState extends State<HomeScreen> {
           color: shiftType != null ? shiftType.color : null,
           shape: BoxShape.circle,
           border: isSelected
-              ? Border.all(color: Colors.black, width: 2)
-              : (isToday ? Border.all(color: Colors.black, width: 1) : null),
+              ? Border.all(color: _textColor, width: 2)
+              : (isToday ? Border.all(color: _textColor, width: 1) : null),
         ),
         child: Center(
           child: Text(
@@ -319,7 +451,7 @@ class _HomeScreenState extends State<HomeScreen> {
             style: TextStyle(
               color: shiftType != null
                   ? Colors.black
-                  : (isRed ? Colors.red : Colors.black),
+                  : (isRed ? _redColor : _textColor),
               fontWeight: isRed || shiftType != null || isToday || isSelected
                   ? FontWeight.bold
                   : FontWeight.normal,
@@ -345,7 +477,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
       decoration: BoxDecoration(
-        color: Colors.grey.shade100,
+        color: _bgColor,
         borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
       ),
       child: Column(
@@ -353,7 +485,7 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           Text(
             'Выбери тип смены:',
-            style: TextStyle(fontSize: 14, color: Colors.grey.shade700),
+            style: TextStyle(fontSize: 14, color: _subtextColor),
           ),
           const SizedBox(height: 12),
           Wrap(
@@ -404,7 +536,7 @@ class _HomeScreenState extends State<HomeScreen> {
           const SizedBox(height: 4),
           Text(
             type.name,
-            style: const TextStyle(fontSize: 10),
+            style: TextStyle(fontSize: 10, color: _textColor),
           ),
         ],
       ),
@@ -425,15 +557,16 @@ class _HomeScreenState extends State<HomeScreen> {
             width: 48,
             height: 48,
             decoration: BoxDecoration(
-              color: Colors.grey.shade300,
+              color: _isDark ? const Color(0xFF2C2C2C) : Colors.grey.shade300,
               shape: BoxShape.circle,
             ),
-            child: const Center(
-              child: Icon(Icons.add, color: Colors.black54),
+            child: Icon(
+              Icons.add,
+              color: _isDark ? const Color(0xFF9E9E9E) : Colors.black54,
             ),
           ),
           const SizedBox(height: 4),
-          const Text('Добавить', style: TextStyle(fontSize: 10)),
+          Text('Добавить', style: TextStyle(fontSize: 10, color: _textColor)),
         ],
       ),
     );
@@ -446,7 +579,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.grey.shade100,
+        color: _bgColor,
         borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
       ),
       child: Column(
@@ -467,7 +600,7 @@ class _HomeScreenState extends State<HomeScreen> {
               const SizedBox(width: 12),
               Text(
                 '${_selectedDay!.day}.${_selectedDay!.month.toString().padLeft(2, '0')}.${_selectedDay!.year}',
-                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: _textColor),
               ),
             ],
           ),
@@ -478,10 +611,10 @@ class _HomeScreenState extends State<HomeScreen> {
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Фактические часы', style: TextStyle(fontSize: 12, color: Colors.grey)),
+                  Text('Фактические часы', style: TextStyle(fontSize: 12, color: _subtextColor)),
                   Text(
                     '${shift.actualHours.toStringAsFixed(1)} ч',
-                    style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                    style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: _textColor),
                   ),
                 ],
               ),
@@ -497,12 +630,14 @@ class _HomeScreenState extends State<HomeScreen> {
           const SizedBox(height: 16),
           Row(
             children: [
-              const Text('Ставка: ', style: TextStyle(fontSize: 14)),
+              Text('Ставка: ', style: TextStyle(fontSize: 14, color: _textColor)),
               Expanded(
                 child: DropdownButton<String>(
                   isExpanded: true,
                   value: shift.rateId,
-                  hint: const Text('Выбери ставку'),
+                  hint: Text('Выбери ставку', style: TextStyle(color: _subtextColor)),
+                  dropdownColor: _isDark ? const Color(0xFF1E1E1E) : Colors.white,
+                  style: TextStyle(color: _textColor),
                   items: _rates.map((r) {
                     return DropdownMenuItem(
                       value: r.id,
@@ -522,7 +657,11 @@ class _HomeScreenState extends State<HomeScreen> {
           const SizedBox(height: 8),
           Text(
             'Сумма: ${_calculateAmount(shift, type, rate).toStringAsFixed(2)} ₽',
-            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.blue),
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              color: _isDark ? const Color(0xFF64B5F6) : Colors.blue,
+            ),
           ),
           const SizedBox(height: 16),
           TextButton.icon(
@@ -532,8 +671,8 @@ class _HomeScreenState extends State<HomeScreen> {
               });
               await _saveShifts();
             },
-            icon: const Icon(Icons.delete, color: Colors.red),
-            label: const Text('Удалить смену', style: TextStyle(color: Colors.red)),
+            icon: Icon(Icons.delete, color: _redColor),
+            label: Text('Удалить смену', style: TextStyle(color: _redColor)),
           ),
         ],
       ),
@@ -547,13 +686,17 @@ class _HomeScreenState extends State<HomeScreen> {
         width: 56,
         height: 56,
         decoration: BoxDecoration(
-          color: Colors.blue,
+          color: _isDark ? const Color(0xFF2C3E50) : Colors.blue,
           borderRadius: BorderRadius.circular(12),
         ),
         child: Center(
           child: Text(
             label,
-            style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+            style: TextStyle(
+              color: _isDark ? const Color(0xFF90CAF9) : Colors.white,
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+            ),
           ),
         ),
       ),
@@ -587,11 +730,15 @@ class _HomeScreenState extends State<HomeScreen> {
 
 class SettingsScreen extends StatefulWidget {
   final List<Rate> rates;
+  final ThemeMode themeMode;
+  final ValueChanged<ThemeMode> onThemeChanged;
   final ValueChanged<List<Rate>> onRatesChanged;
 
   const SettingsScreen({
     super.key,
     required this.rates,
+    required this.themeMode,
+    required this.onThemeChanged,
     required this.onRatesChanged,
   });
 
@@ -617,6 +764,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          const Text('Тема', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          _buildThemeTile('Светлая', ThemeMode.light),
+          _buildThemeTile('Тёмная', ThemeMode.dark),
+          _buildThemeTile('Системная', ThemeMode.system),
+          const SizedBox(height: 24),
           const Text('Ставки', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
           ..._rates.map((r) => _buildRateTile(r)),
@@ -627,6 +780,34 @@ class _SettingsScreenState extends State<SettingsScreen> {
             label: const Text('Добавить ставку'),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildThemeTile(String label, ThemeMode mode) {
+    final isSelected = widget.themeMode == mode;
+    return Card(
+      child: ListTile(
+        title: Text(label),
+        leading: Icon(
+          isSelected ? Icons.radio_button_checked : Icons.radio_button_unchecked,
+          color: isSelected ? Theme.of(context).colorScheme.primary : null,
+        ),
+        onTap: () {
+          widget.onThemeChanged(mode);
+          Navigator.pop(context);
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => SettingsScreen(
+                rates: _rates,
+                themeMode: mode,
+                onThemeChanged: widget.onThemeChanged,
+                onRatesChanged: widget.onRatesChanged,
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -645,7 +826,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
               onPressed: () => _editRate(rate),
             ),
             IconButton(
-              icon: const Icon(Icons.delete, color: Colors.red),
+              icon: Icon(Icons.delete, color: Theme.of(context).brightness == Brightness.dark
+                  ? const Color(0xFFEF9A9A)
+                  : Colors.red),
               onPressed: () => _deleteRate(rate),
             ),
           ],
@@ -694,7 +877,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
               widget.onRatesChanged(_rates);
               Navigator.pop(context);
             },
-            child: const Text('Удалить', style: TextStyle(color: Colors.red)),
+            child: Text('Удалить', style: TextStyle(
+              color: Theme.of(context).brightness == Brightness.dark
+                  ? const Color(0xFFEF9A9A)
+                  : Colors.red,
+            )),
           ),
         ],
       ),
