@@ -3,6 +3,7 @@ import 'package:table_calendar/table_calendar.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'dart:convert';
 import 'data/models.dart';
 import 'data/holiday_loader.dart';
 
@@ -106,6 +107,7 @@ class _HomeScreenState extends State<HomeScreen> {
   DateTime? _selectedDay;
 
   List<ShiftType> _shiftTypes = [];
+  List<ShiftTemplate> _templates = [];
   final Map<String, ShiftEntry> _shifts = {};
   List<Holiday> _holidays = [];
   Map<String, MonthRecord> _closedMonths = {};
@@ -131,14 +133,23 @@ class _HomeScreenState extends State<HomeScreen> {
     final prefs = await SharedPreferences.getInstance();
 
     final savedTypes = prefs.getStringList('shift_types');
-    List<ShiftType> types = savedTypes == null || savedTypes.isEmpty
-        ? ShiftType.defaults()
-        : savedTypes.map((s) => ShiftType.fromJson(
-            Map<String, dynamic>.from(Map.fromEntries(s.split(';;').map((e) {
-              final kv = e.split('::');
-              return MapEntry(kv[0], kv[1]);
-            }))),
-          )).toList();
+    List<ShiftType> types = [];
+    if (savedTypes != null) {
+      for (final s in savedTypes) {
+        try {
+          types.add(ShiftType.fromJson(jsonDecode(s) as Map<String, dynamic>));
+        } catch (_) {}
+      }
+    }
+    if (types.isEmpty) types = ShiftType.defaults();
+
+    final savedTemplates = prefs.getStringList('custom_templates') ?? [];
+    final customTemplates = <ShiftTemplate>[];
+    for (final s in savedTemplates) {
+      try {
+        customTemplates.add(ShiftTemplate.fromJson(jsonDecode(s) as Map<String, dynamic>));
+      } catch (_) {}
+    }
 
     _globalCoefOvertime = double.tryParse(prefs.getString('coef_overtime') ?? '1.0') ?? 1.0;
     _globalCoefUndertime = double.tryParse(prefs.getString('coef_undertime') ?? '1.0') ?? 1.0;
@@ -161,6 +172,7 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _holidays = loadedHolidays;
       _shiftTypes = types;
+      _templates = [...ShiftTemplate.predefined(), ...customTemplates];
       _shifts.addAll(map);
       _closedMonths = closed;
     });
@@ -177,9 +189,7 @@ class _HomeScreenState extends State<HomeScreen> {
         final parts = k.split('-');
         return int.parse(parts[0]) == prevMonth.year && int.parse(parts[1]) == prevMonth.month;
       });
-      if (hasShifts) {
-        await _closeMonth(prevMonth.year, prevMonth.month);
-      }
+      if (hasShifts) await _closeMonth(prevMonth.year, prevMonth.month);
     }
   }
 
@@ -191,11 +201,15 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _saveShiftTypes() async {
     final prefs = await SharedPreferences.getInstance();
-    final list = _shiftTypes.map((t) {
-      final json = t.toJson();
-      return json.entries.map((e) => '${e.key}::${e.value}').join(';;');
-    }).toList();
+    final list = _shiftTypes.map((t) => jsonEncode(t.toJson())).toList();
     await prefs.setStringList('shift_types', list);
+  }
+
+  Future<void> _saveTemplates() async {
+    final prefs = await SharedPreferences.getInstance();
+    final custom = _templates.where((t) => t.isCustom).toList();
+    final list = custom.map((t) => jsonEncode(t.toJson())).toList();
+    await prefs.setStringList('custom_templates', list);
   }
 
   Future<void> _saveGlobalSettings() async {
@@ -211,9 +225,7 @@ class _HomeScreenState extends State<HomeScreen> {
     await prefs.setStringList('closed_months', list);
   }
 
-  bool _isMonthClosed(int year, int month) {
-    return _closedMonths.containsKey('$year-$month');
-  }
+  bool _isMonthClosed(int year, int month) => _closedMonths.containsKey('$year-$month');
 
   Future<void> _closeMonth(int year, int month) async {
     final entries = _shifts.entries.where((e) {
@@ -232,7 +244,6 @@ class _HomeScreenState extends State<HomeScreen> {
       if (type.id == 'sick') { sickDays++; continue; }
       if (type.id == 'vacation') { vacationDays++; continue; }
       if (!type.countInSalary) continue;
-
       workShifts++;
       totalHours += shift.actualHours;
       final diff = shift.actualHours - type.plannedHours;
@@ -246,21 +257,15 @@ class _HomeScreenState extends State<HomeScreen> {
       year: year, month: month,
       workShifts: workShifts, sickDays: sickDays, vacationDays: vacationDays,
       totalHours: totalHours, overtimeHours: overtime, undertimeHours: undertime,
-      totalAmount: totalAmount,
-      rateSnapshot: ratesUsed.join(', '),
-      closedAt: DateTime.now(),
+      totalAmount: totalAmount, rateSnapshot: ratesUsed.join(', '), closedAt: DateTime.now(),
     );
 
-    setState(() {
-      _closedMonths['$year-$month'] = record;
-    });
+    setState(() => _closedMonths['$year-$month'] = record);
     await _saveClosedMonths();
   }
 
   Future<void> _unfreezeMonth(int year, int month) async {
-    setState(() {
-      _closedMonths.remove('$year-$month');
-    });
+    setState(() => _closedMonths.remove('$year-$month'));
     await _saveClosedMonths();
   }
 
@@ -295,51 +300,51 @@ class _HomeScreenState extends State<HomeScreen> {
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 500),
           child: SingleChildScrollView(
-        child: Column(
-          children: [
-            TableCalendar(
-              firstDay: DateTime.utc(2020, 1, 1),
-              lastDay: DateTime.utc(2030, 12, 31),
-              focusedDay: _focusedDay,
-              selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
-              onHeaderTapped: (focusedDay) => _showCustomMonthPicker(context, focusedDay),
-              onDaySelected: (selectedDay, focusedDay) {
-                setState(() { _selectedDay = selectedDay; _focusedDay = focusedDay; });
-              },
-              calendarFormat: CalendarFormat.month,
-              availableCalendarFormats: const {CalendarFormat.month: 'Месяц'},
-              locale: 'ru_RU',
-              startingDayOfWeek: StartingDayOfWeek.monday,
-              daysOfWeekHeight: 24.0,
-              availableGestures: AvailableGestures.none,
-              calendarStyle: CalendarStyle(
-                defaultTextStyle: TextStyle(color: _textColor),
-                weekendTextStyle: TextStyle(color: _redColor),
-                outsideTextStyle: TextStyle(color: _textColor.withValues(alpha: 0.3)),
-                todayDecoration: BoxDecoration(border: Border.all(color: _textColor, width: 1), shape: BoxShape.circle),
-                selectedDecoration: BoxDecoration(border: Border.all(color: _textColor, width: 2), shape: BoxShape.circle),
-                markersMaxCount: 0,
-              ),
-              calendarBuilders: CalendarBuilders(
-                defaultBuilder: (context, day, focusedDay) => _buildDayCell(day),
-                todayBuilder: (context, day, focusedDay) => _buildDayCell(day),
-                selectedBuilder: (context, day, focusedDay) => _buildDayCell(day, isSelected: true),
-                outsideBuilder: (context, day, focusedDay) => _buildDayCell(day, isOutside: true),
-              ),
-              headerStyle: HeaderStyle(
-                formatButtonVisible: false, titleCentered: true,
-                titleTextStyle: TextStyle(color: _textColor, fontSize: 18, fontWeight: FontWeight.bold),
-                leftChevronIcon: Icon(Icons.chevron_left, color: _textColor),
-                rightChevronIcon: Icon(Icons.chevron_right, color: _textColor),
-              ),
-              daysOfWeekStyle: DaysOfWeekStyle(weekdayStyle: TextStyle(color: _subtextColor), weekendStyle: TextStyle(color: _redColor)),
+            child: Column(
+              children: [
+                TableCalendar(
+                  firstDay: DateTime.utc(2020, 1, 1),
+                  lastDay: DateTime.utc(2030, 12, 31),
+                  focusedDay: _focusedDay,
+                  selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
+                  onHeaderTapped: (focusedDay) => _showCustomMonthPicker(context, focusedDay),
+                  onDaySelected: (selectedDay, focusedDay) {
+                    setState(() { _selectedDay = selectedDay; _focusedDay = focusedDay; });
+                  },
+                  calendarFormat: CalendarFormat.month,
+                  availableCalendarFormats: const {CalendarFormat.month: 'Месяц'},
+                  locale: 'ru_RU',
+                  startingDayOfWeek: StartingDayOfWeek.monday,
+                  daysOfWeekHeight: 24.0,
+                  availableGestures: AvailableGestures.none,
+                  calendarStyle: CalendarStyle(
+                    defaultTextStyle: TextStyle(color: _textColor),
+                    weekendTextStyle: TextStyle(color: _redColor),
+                    outsideTextStyle: TextStyle(color: _textColor.withValues(alpha: 0.3)),
+                    todayDecoration: BoxDecoration(border: Border.all(color: _textColor, width: 1), shape: BoxShape.circle),
+                    selectedDecoration: BoxDecoration(border: Border.all(color: _textColor, width: 2), shape: BoxShape.circle),
+                    markersMaxCount: 0,
+                  ),
+                  calendarBuilders: CalendarBuilders(
+                    defaultBuilder: (context, day, focusedDay) => _buildDayCell(day),
+                    todayBuilder: (context, day, focusedDay) => _buildDayCell(day),
+                    selectedBuilder: (context, day, focusedDay) => _buildDayCell(day, isSelected: true),
+                    outsideBuilder: (context, day, focusedDay) => _buildDayCell(day, isOutside: true),
+                  ),
+                  headerStyle: HeaderStyle(
+                    formatButtonVisible: false, titleCentered: true,
+                    titleTextStyle: TextStyle(color: _textColor, fontSize: 18, fontWeight: FontWeight.bold),
+                    leftChevronIcon: Icon(Icons.chevron_left, color: _textColor),
+                    rightChevronIcon: Icon(Icons.chevron_right, color: _textColor),
+                  ),
+                  daysOfWeekStyle: DaysOfWeekStyle(weekdayStyle: TextStyle(color: _subtextColor), weekendStyle: TextStyle(color: _redColor)),
+                ),
+                const SizedBox(height: 8),
+                if (_selectedDay != null) _buildBottomPanel(),
+              ],
             ),
-            const SizedBox(height: 8),
-            if (_selectedDay != null) _buildBottomPanel(),
-          ],
           ),
         ),
-      ),
       ),
     );
   }
@@ -393,6 +398,7 @@ class _HomeScreenState extends State<HomeScreen> {
     Navigator.push(context, MaterialPageRoute(
       builder: (context) => SettingsScreen(
         shiftTypes: _shiftTypes,
+        templates: _templates,
         themeMode: widget.themeMode,
         globalCoefOvertime: _globalCoefOvertime,
         globalCoefUndertime: _globalCoefUndertime,
@@ -402,6 +408,10 @@ class _HomeScreenState extends State<HomeScreen> {
           setState(() => _shiftTypes = newTypes);
           await _saveShiftTypes();
         },
+        onTemplatesChanged: (newTemplates) async {
+          setState(() => _templates = newTemplates);
+          await _saveTemplates();
+        },
         onGlobalSettingsChanged: (coefOver, coefUnder, interval) async {
           setState(() {
             _globalCoefOvertime = coefOver;
@@ -410,8 +420,73 @@ class _HomeScreenState extends State<HomeScreen> {
           });
           await _saveGlobalSettings();
         },
+        onGenerateTemplate: _generateFromTemplate,
       ),
     ));
+  }
+
+    Future<void> _generateFromTemplate(ShiftTemplate template, DateTime startDate, String typeId, int months) async {
+    final endDate = DateTime(startDate.year, startDate.month + months, 0);
+    final newShifts = <String, ShiftEntry>{};
+    int overwritten = 0;
+
+    for (int i = 0; i <= endDate.difference(startDate).inDays; i++) {
+      final date = startDate.add(Duration(days: i));
+      if (date.isAfter(endDate)) break;
+      if (_isMonthClosed(date.year, date.month)) continue;
+
+      final step = template.cycle[i % template.cycle.length];
+      if (step == 'rest') continue;
+
+      // Для своих шаблонов step = id типа ('day','night','daily'). Для предустановленных step = 'work'.
+      final effectiveTypeId = (step == 'work') ? typeId : step;
+      final type = _getShiftType(effectiveTypeId);
+      if (type == null) continue;
+
+      final key = _dateKey(date);
+      if (_shifts.containsKey(key)) {
+        overwritten++;
+        continue;
+      }
+      newShifts[key] = ShiftEntry(typeId: type.id, actualHours: type.plannedHours);
+    }
+
+    if (overwritten > 0) {
+      if (!mounted) return;
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Конфликты'),
+          content: Text('$overwritten дней уже заняты сменами. Перезаписать?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Отмена')),
+            TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Перезаписать')),
+          ],
+        ),
+      );
+      if (ok != true) return;
+
+      for (int i = 0; i <= endDate.difference(startDate).inDays; i++) {
+        final date = startDate.add(Duration(days: i));
+        if (date.isAfter(endDate)) break;
+        if (_isMonthClosed(date.year, date.month)) continue;
+        final step = template.cycle[i % template.cycle.length];
+        if (step == 'rest') continue;
+        final effectiveTypeId = (step == 'work') ? typeId : step;
+        final type = _getShiftType(effectiveTypeId);
+        if (type == null) continue;
+        final key = _dateKey(date);
+        newShifts[key] = ShiftEntry(typeId: type.id, actualHours: type.plannedHours);
+      }
+    }
+
+    setState(() => _shifts.addAll(newShifts));
+    await _saveShifts();
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Создано ${newShifts.length} смен по шаблону «${template.name}»')),
+    );
   }
 
   void _showCustomMonthPicker(BuildContext context, DateTime initialDate) {
@@ -500,8 +575,6 @@ class _HomeScreenState extends State<HomeScreen> {
             Icon(Icons.lock, color: _subtextColor, size: 32),
             const SizedBox(height: 8),
             Text('Месяц закрыт. Редактирование недоступно.', style: TextStyle(color: _textColor), textAlign: TextAlign.center),
-            const SizedBox(height: 8),
-            Text('Откройте статистику (📊), чтобы разморозить.', style: TextStyle(color: _subtextColor, fontSize: 12), textAlign: TextAlign.center),
           ],
         ),
       );
@@ -536,7 +609,7 @@ class _HomeScreenState extends State<HomeScreen> {
         setState(() { _shifts[_dateKey(_selectedDay!)] = ShiftEntry(typeId: type.id, actualHours: type.plannedHours); });
         await _saveShifts();
       },
-      onLongPress: () => _editShiftTypeFromPicker(type),
+      onLongPress: () => _openSettings(),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -554,9 +627,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildAddCircle() {
     return GestureDetector(
-      onTap: () {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Создание типа — в настройках (шестерёнка)')));
-      },
+      onTap: _openSettings,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -570,32 +641,6 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
     );
-  }
-
-  void _editShiftTypeFromPicker(ShiftType type) {
-    // Упрощённый диалог — полный есть в настройках
-    Navigator.push(context, MaterialPageRoute(
-      builder: (context) => SettingsScreen(
-        shiftTypes: _shiftTypes,
-        themeMode: widget.themeMode,
-        globalCoefOvertime: _globalCoefOvertime,
-        globalCoefUndertime: _globalCoefUndertime,
-        intervalMinutes: _intervalMinutes,
-        onThemeChanged: widget.onThemeChanged,
-        onShiftTypesChanged: (newTypes) async {
-          setState(() => _shiftTypes = newTypes);
-          await _saveShiftTypes();
-        },
-        onGlobalSettingsChanged: (coefOver, coefUnder, interval) async {
-          setState(() {
-            _globalCoefOvertime = coefOver;
-            _globalCoefUndertime = coefUnder;
-            _intervalMinutes = interval;
-          });
-          await _saveGlobalSettings();
-        },
-      ),
-    ));
   }
 
   Widget _buildShiftCard(String key, ShiftEntry shift) {
@@ -799,13 +844,9 @@ class StatsScreen extends StatefulWidget {
 
   const StatsScreen({
     super.key,
-    required this.initialYear,
-    required this.initialMonth,
-    required this.isMonthClosed,
-    required this.getClosedRecord,
-    required this.onClose,
-    required this.onUnfreeze,
-    required this.computeStats,
+    required this.initialYear, required this.initialMonth,
+    required this.isMonthClosed, required this.getClosedRecord,
+    required this.onClose, required this.onUnfreeze, required this.computeStats,
   });
 
   @override
@@ -831,23 +872,13 @@ class _StatsScreenState extends State<StatsScreen> {
 
   void _prevMonth() {
     setState(() {
-      if (_month == 1) {
-        _month = 12;
-        _year--;
-      } else {
-        _month--;
-      }
+      if (_month == 1) { _month = 12; _year--; } else { _month--; }
     });
   }
 
   void _nextMonth() {
     setState(() {
-      if (_month == 12) {
-        _month = 1;
-        _year++;
-      } else {
-        _month++;
-      }
+      if (_month == 12) { _month = 1; _year++; } else { _month++; }
     });
   }
 
@@ -869,27 +900,16 @@ class _StatsScreenState extends State<StatsScreen> {
         : widget.computeStats(_year, _month);
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Статистика'),
-      ),
+      appBar: AppBar(title: const Text('Статистика')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              IconButton(
-                icon: const Icon(Icons.chevron_left),
-                onPressed: _prevMonth,
-              ),
-              Text(
-                '${_monthNames[_month - 1]} $_year',
-                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-              ),
-              IconButton(
-                icon: const Icon(Icons.chevron_right),
-                onPressed: _nextMonth,
-              ),
+              IconButton(icon: const Icon(Icons.chevron_left), onPressed: _prevMonth),
+              Text('${_monthNames[_month - 1]} $_year', style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+              IconButton(icon: const Icon(Icons.chevron_right), onPressed: _nextMonth),
             ],
           ),
           const SizedBox(height: 12),
@@ -914,19 +934,13 @@ class _StatsScreenState extends State<StatsScreen> {
           const SizedBox(height: 24),
           if (!isClosed)
             ElevatedButton.icon(
-              onPressed: () async {
-                await widget.onClose(_year, _month);
-                setState(() {});
-              },
+              onPressed: () async { await widget.onClose(_year, _month); setState(() {}); },
               icon: const Icon(Icons.lock),
               label: const Text('Закрыть месяц'),
             )
           else
             OutlinedButton.icon(
-              onPressed: () async {
-                await widget.onUnfreeze(_year, _month);
-                setState(() {});
-              },
+              onPressed: () async { await widget.onUnfreeze(_year, _month); setState(() {}); },
               icon: const Icon(Icons.lock_open),
               label: const Text('Разморозить месяц'),
             ),
@@ -953,22 +967,25 @@ class _StatsScreenState extends State<StatsScreen> {
   }
 }
 
-
 class SettingsScreen extends StatefulWidget {
   final List<ShiftType> shiftTypes;
+  final List<ShiftTemplate> templates;
   final ThemeMode themeMode;
   final double globalCoefOvertime;
   final double globalCoefUndertime;
   final int intervalMinutes;
   final ValueChanged<ThemeMode> onThemeChanged;
   final ValueChanged<List<ShiftType>> onShiftTypesChanged;
+  final ValueChanged<List<ShiftTemplate>> onTemplatesChanged;
   final Function(double, double, int) onGlobalSettingsChanged;
+  final Future<void> Function(ShiftTemplate, DateTime, String, int) onGenerateTemplate;
 
   const SettingsScreen({
     super.key,
-    required this.shiftTypes, required this.themeMode,
+    required this.shiftTypes, required this.templates, required this.themeMode,
     required this.globalCoefOvertime, required this.globalCoefUndertime, required this.intervalMinutes,
-    required this.onThemeChanged, required this.onShiftTypesChanged, required this.onGlobalSettingsChanged,
+    required this.onThemeChanged, required this.onShiftTypesChanged, required this.onTemplatesChanged,
+    required this.onGlobalSettingsChanged, required this.onGenerateTemplate,
   });
 
   @override
@@ -977,6 +994,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   late List<ShiftType> _shiftTypes;
+  late List<ShiftTemplate> _templates;
   late double _coefOver;
   late double _coefUnder;
   late int _interval;
@@ -985,6 +1003,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   void initState() {
     super.initState();
     _shiftTypes = List.from(widget.shiftTypes);
+    _templates = List.from(widget.templates);
     _coefOver = widget.globalCoefOvertime;
     _coefUnder = widget.globalCoefUndertime;
     _interval = widget.intervalMinutes;
@@ -1008,6 +1027,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ..._shiftTypes.map((t) => _buildShiftTypeTile(t)),
           const SizedBox(height: 8),
           ElevatedButton.icon(onPressed: _addShiftType, icon: const Icon(Icons.add), label: const Text('Добавить тип смены')),
+          const SizedBox(height: 24),
+          const Text('Шаблоны смен', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          ..._templates.map((t) => _buildTemplateTile(t)),
+          const SizedBox(height: 8),
+          ElevatedButton.icon(onPressed: _createCustomTemplate, icon: const Icon(Icons.add), label: const Text('Создать свой шаблон')),
           const SizedBox(height: 24),
           const Text('Коэффициенты (глобальные)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
@@ -1039,17 +1064,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       child: ListTile(
         title: Text(label),
         leading: Icon(isSelected ? Icons.radio_button_checked : Icons.radio_button_unchecked, color: isSelected ? Theme.of(context).colorScheme.primary : null),
-        onTap: () {
-          widget.onThemeChanged(mode);
-          Navigator.pop(context);
-          Navigator.push(context, MaterialPageRoute(
-            builder: (context) => SettingsScreen(
-              shiftTypes: _shiftTypes, themeMode: mode,
-              globalCoefOvertime: _coefOver, globalCoefUndertime: _coefUnder, intervalMinutes: _interval,
-              onThemeChanged: widget.onThemeChanged, onShiftTypesChanged: widget.onShiftTypesChanged, onGlobalSettingsChanged: widget.onGlobalSettingsChanged,
-            ),
-          ));
-        },
+        onTap: () { widget.onThemeChanged(mode); Navigator.pop(context); },
       ),
     );
   }
@@ -1069,6 +1084,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  Widget _buildTemplateTile(ShiftTemplate template) {
+    return Card(
+      child: ListTile(
+        title: Row(
+          children: [
+            Expanded(child: Text(template.name)),
+            if (template.isCustom)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(color: Colors.blue.shade100, borderRadius: BorderRadius.circular(4)),
+                child: const Text('свой', style: TextStyle(fontSize: 10)),
+              ),
+          ],
+        ),
+        subtitle: Text('${template.description} • приоритет ${template.priority}'),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(icon: const Icon(Icons.play_arrow), onPressed: () => _showGenerateDialog(template)),
+            if (template.isCustom)
+              IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: () => _deleteTemplate(template)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _deleteTemplate(ShiftTemplate template) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Удалить шаблон?'),
+        content: Text('Шаблон «${template.name}» будет удалён.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
+          TextButton(
+            onPressed: () {
+              setState(() => _templates.removeWhere((t) => t.id == template.id));
+              widget.onTemplatesChanged(_templates);
+              Navigator.pop(context);
+            },
+            child: const Text('Удалить', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildNumberField(String label, double value, ValueChanged<double> onChanged) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
@@ -1083,6 +1146,203 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _addShiftType() => _showShiftTypeDialog(null);
   void _editShiftType(ShiftType type) => _showShiftTypeDialog(type);
+
+  void _createCustomTemplate() {
+    final nameController = TextEditingController();
+    final steps = <String>[]; // typeId или 'rest'
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Свой шаблон'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Название')),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8, runSpacing: 8,
+                  children: [
+                    ...steps.asMap().entries.map((e) {
+                      final step = e.value;
+                      final isRest = step == 'rest';
+                      final type = isRest ? null : _shiftTypes.firstWhere(
+                        (t) => t.id == step,
+                        orElse: () => _shiftTypes.first,
+                      );
+                      return GestureDetector(
+                        onLongPress: () => setDialogState(() => steps.removeAt(e.key)),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 48, height: 48,
+                              decoration: BoxDecoration(
+                                color: isRest ? Colors.grey.shade400 : (type?.color ?? Colors.grey),
+                                shape: BoxShape.circle,
+                              ),
+                              child: Center(
+                                child: Text(
+                                  isRest ? '—' : (type?.letter ?? '?'),
+                                  style: const TextStyle(color: Colors.black, fontSize: 18, fontWeight: FontWeight.bold),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              isRest ? 'Отдых' : (type?.name ?? '?'),
+                              style: const TextStyle(fontSize: 10),
+                            ),
+                          ],
+                        ),
+                      );
+                    }),
+                    GestureDetector(
+                      onTap: () async {
+                        final picked = await showDialog<String>(
+                          context: context,
+                          builder: (context) => SimpleDialog(
+                            title: const Text('Выбери шаг'),
+                            children: [
+                              SimpleDialogOption(
+                                onPressed: () => Navigator.pop(context, 'rest'),
+                                child: const Text('Отдых'),
+                              ),
+                              ..._shiftTypes.map((t) => SimpleDialogOption(
+                                onPressed: () => Navigator.pop(context, t.id),
+                                child: Text(t.name),
+                              )),
+                            ],
+                          ),
+                        );
+                        if (picked != null) setDialogState(() => steps.add(picked));
+                      },
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 48, height: 48,
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade300,
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(Icons.add, color: Colors.black54),
+                          ),
+                          const SizedBox(height: 4),
+                          const Text('Шаг', style: TextStyle(fontSize: 10)),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
+            TextButton(
+              onPressed: () {
+                final name = nameController.text.trim();
+                if (name.isEmpty || steps.isEmpty) return;
+                final maxPriority = _templates.fold<int>(0, (p, t) => t.priority > p ? t.priority : p);
+                final newTemplate = ShiftTemplate(
+                  id: 'custom_${DateTime.now().millisecondsSinceEpoch}',
+                  name: name,
+                  cycle: steps,
+                  description: 'Свой шаблон',
+                  priority: maxPriority + 1,
+                  isCustom: true,
+                );
+                setState(() => _templates.add(newTemplate));
+                widget.onTemplatesChanged(_templates);
+                Navigator.pop(context);
+              },
+              child: const Text('Сохранить'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showGenerateDialog(ShiftTemplate template) {
+    DateTime startDate = DateTime.now();
+    String? typeId = _shiftTypes.isNotEmpty ? _shiftTypes.first.id : null;
+    int months = 1;
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text('Шаблон «${template.name}»'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  title: const Text('Дата начала'),
+                  subtitle: Text('${startDate.day}.${startDate.month.toString().padLeft(2, '0')}.${startDate.year}'),
+                  trailing: const Icon(Icons.calendar_today),
+                  onTap: () async {
+                    final picked = await showDatePicker(
+                      context: context,
+                      initialDate: startDate,
+                      firstDate: DateTime(2020),
+                      lastDate: DateTime(2030),
+                    );
+                    if (picked != null) setDialogState(() => startDate = picked);
+                  },
+                ),
+                const SizedBox(height: 8),
+                // Показываем выбор типа ТОЛЬКО для предустановленных шаблонов
+                if (!template.isCustom)
+                  DropdownButtonFormField<String>(
+                    value: typeId,
+                    decoration: const InputDecoration(labelText: 'Тип смены для рабочих дней'),
+                    items: _shiftTypes.map((t) => DropdownMenuItem(value: t.id, child: Text(t.name))).toList(),
+                    onChanged: (value) {
+                      if (value != null) {
+                        setDialogState(() => typeId = value);
+                      }
+                    },
+                  ),
+                if (!template.isCustom) const SizedBox(height: 8),
+                DropdownButtonFormField<int>(
+                  value: months,
+                  decoration: const InputDecoration(labelText: 'Период'),
+                  items: const [
+                    DropdownMenuItem(value: 1, child: Text('1 месяц')),
+                    DropdownMenuItem(value: 2, child: Text('2 месяца')),
+                    DropdownMenuItem(value: 3, child: Text('3 месяца')),
+                  ],
+                  onChanged: (value) { if (value != null) setDialogState(() => months = value); },
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
+            TextButton(
+              onPressed: () {
+                // Для предустановленных typeId обязателен, для своих — нет
+                if (!template.isCustom && typeId == null) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Выбери тип смены')),
+                  );
+                  return;
+                }
+                Navigator.pop(context);
+                widget.onGenerateTemplate(template, startDate, typeId ?? 'day', months);
+              },
+              child: const Text('Создать'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   void _showShiftTypeDialog(ShiftType? existing) {
     final nameController = TextEditingController(text: existing?.name ?? '');

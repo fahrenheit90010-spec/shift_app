@@ -7,6 +7,10 @@ class Features {
   static const bool cloudSync = false;
   static const bool showMyApps = false;
   static const bool proSectionVisible = true;
+  // Pro: сейчас true (делаем всё целиком), потом поставим false
+  static const bool multipleTemplates = true;
+  static const bool customTemplates = true;
+  static const bool categories = true;
 }
 
 class ShiftType {
@@ -22,16 +26,10 @@ class ShiftType {
   final double coefUndertime;
 
   const ShiftType({
-    required this.id,
-    required this.name,
-    required this.letter,
-    required this.color,
-    required this.plannedHours,
-    required this.countInSalary,
-    required this.rateValue,
-    required this.rateType,
-    required this.coefOvertime,
-    required this.coefUndertime,
+    required this.id, required this.name, required this.letter, required this.color,
+    required this.plannedHours, required this.countInSalary,
+    required this.rateValue, required this.rateType,
+    required this.coefOvertime, required this.coefUndertime,
   });
 
   static List<ShiftType> defaults() => [
@@ -72,12 +70,9 @@ class ShiftEntry {
   double? overrideCoefUndertime;
 
   ShiftEntry({
-    required this.typeId,
-    required this.actualHours,
-    this.overrideRateValue,
-    this.overrideRateType,
-    this.overrideCoefOvertime,
-    this.overrideCoefUndertime,
+    required this.typeId, required this.actualHours,
+    this.overrideRateValue, this.overrideRateType,
+    this.overrideCoefOvertime, this.overrideCoefUndertime,
   });
 
   String toStorageString() {
@@ -97,7 +92,6 @@ class ShiftEntry {
   }
 }
 
-// Запись о закрытом месяце
 class MonthRecord {
   final int year;
   final int month;
@@ -112,17 +106,10 @@ class MonthRecord {
   final DateTime closedAt;
 
   MonthRecord({
-    required this.year,
-    required this.month,
-    required this.workShifts,
-    required this.sickDays,
-    required this.vacationDays,
-    required this.totalHours,
-    required this.overtimeHours,
-    required this.undertimeHours,
-    required this.totalAmount,
-    required this.rateSnapshot,
-    required this.closedAt,
+    required this.year, required this.month,
+    required this.workShifts, required this.sickDays, required this.vacationDays,
+    required this.totalHours, required this.overtimeHours, required this.undertimeHours,
+    required this.totalAmount, required this.rateSnapshot, required this.closedAt,
   });
 
   String toStorageString() {
@@ -132,17 +119,55 @@ class MonthRecord {
   factory MonthRecord.fromStorageString(String s) {
     final p = s.split('|');
     return MonthRecord(
-      year: int.parse(p[0]),
-      month: int.parse(p[1]),
-      workShifts: int.parse(p[2]),
-      sickDays: int.parse(p[3]),
-      vacationDays: int.parse(p[4]),
-      totalHours: double.parse(p[5]),
-      overtimeHours: double.parse(p[6]),
-      undertimeHours: double.parse(p[7]),
-      totalAmount: double.parse(p[8]),
-      rateSnapshot: p[9],
+      year: int.parse(p[0]), month: int.parse(p[1]),
+      workShifts: int.parse(p[2]), sickDays: int.parse(p[3]), vacationDays: int.parse(p[4]),
+      totalHours: double.parse(p[5]), overtimeHours: double.parse(p[6]), undertimeHours: double.parse(p[7]),
+      totalAmount: double.parse(p[8]), rateSnapshot: p[9],
       closedAt: DateTime.parse(p[10]),
     );
   }
+}
+
+// Шаг цикла: тип смены или 'rest'
+class TemplateStep {
+  final String? typeId; // null = отдых
+  const TemplateStep({this.typeId});
+  bool get isRest => typeId == null;
+}
+
+// Шаблон цикла (фиксированный или свой)
+class ShiftTemplate {
+  final String id;
+  final String name;
+  final List<String> cycle; // список typeId или 'rest'
+  final String description;
+  final int priority;
+  final bool isCustom;
+
+  const ShiftTemplate({
+    required this.id, required this.name, required this.cycle,
+    required this.description, required this.priority, this.isCustom = false,
+  });
+
+  static List<ShiftTemplate> predefined() => [
+    const ShiftTemplate(id: '2_2', name: '2/2', cycle: ['work','work','rest','rest'], description: '2 рабочих, 2 отдыха', priority: 1),
+    const ShiftTemplate(id: '5_2', name: '5/2', cycle: ['work','work','work','work','work','rest','rest'], description: '5 рабочих, 2 отдыха', priority: 2),
+    const ShiftTemplate(id: '3_3', name: '3/3', cycle: ['work','work','work','rest','rest','rest'], description: '3 рабочих, 3 отдыха', priority: 3),
+    const ShiftTemplate(id: '2_2_3', name: '2/2/3', cycle: ['work','work','rest','rest','work','work','work'], description: '2 рабочих, 2 отдыха, 3 рабочих', priority: 4),
+    const ShiftTemplate(id: '1_3', name: 'Сутки через трое', cycle: ['work','rest','rest','rest'], description: '1 рабочий, 3 отдыха', priority: 5),
+  ];
+
+  Map<String, dynamic> toJson() => {
+    'id': id, 'name': name, 'cycle': cycle, 'description': description,
+    'priority': priority, 'isCustom': isCustom,
+  };
+
+  factory ShiftTemplate.fromJson(Map<String, dynamic> json) => ShiftTemplate(
+    id: json['id'],
+    name: json['name'],
+    cycle: List<String>.from(json['cycle']),
+    description: json['description'] ?? '',
+    priority: json['priority'] ?? 1,
+    isCustom: json['isCustom'] ?? false,
+  );
 }
