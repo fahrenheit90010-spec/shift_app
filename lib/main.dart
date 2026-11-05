@@ -304,6 +304,104 @@ class _HomeScreenState extends State<HomeScreen> {
     if (holiday != null) return !holiday.isWorkday;
     return day.weekday == DateTime.saturday || day.weekday == DateTime.sunday;
   }
+  // Проверка пересечения смены с существующими (на этом дне и следующем)
+  ShiftEntry? _findConflict(ShiftEntry newShift) {
+    for (final e in _shifts.entries) {
+      for (final existing in e.value) {
+        if (existing.groupId != null && existing.groupId == newShift.groupId) continue;
+        final newStart = newShift.startTime;
+        final newEnd = newShift.endTime;
+        final exStart = existing.startTime;
+        final exEnd = existing.endTime;
+        // Пересечение: newStart < exEnd && exStart < newEnd
+        if (newStart.isBefore(exEnd) && exStart.isBefore(newEnd)) {
+          return existing;
+        }
+      }
+    }
+    return null;
+  }
+
+  // Показать диалог конфликта. Возвращает: 'replace', 'add', 'cancel'
+  Future<String> _showConflictDialog(ShiftEntry conflict, ShiftEntry newShift) async {
+    final type = _getShiftType(conflict.typeId);
+    final newType = _getShiftType(newShift.typeId);
+    final conflictStart = '${conflict.startTime.hour.toString().padLeft(2, '0')}:${conflict.startTime.minute.toString().padLeft(2, '0')}';
+    final conflictEnd = '${conflict.endTime.hour.toString().padLeft(2, '0')}:${conflict.endTime.minute.toString().padLeft(2, '0')}';
+    final newStart = '${newShift.startTime.hour.toString().padLeft(2, '0')}:${newShift.startTime.minute.toString().padLeft(2, '0')}';
+    final newEnd = '${newShift.endTime.hour.toString().padLeft(2, '0')}:${newShift.endTime.minute.toString().padLeft(2, '0')}';
+
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Конфликт'),
+        content: Text(
+          'Новая смена «${newType?.name ?? "?"}» ($newStart–$newEnd) пересекается с «${type?.name ?? "?"}» ($conflictStart–$conflictEnd).\n\nЧто делать?',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, 'cancel'), child: const Text('Отмена')),
+          TextButton(onPressed: () => Navigator.pop(context, 'add'), child: const Text('Добавить всё равно')),
+          TextButton(onPressed: () => Navigator.pop(context, 'replace'), child: const Text('Заменить')),
+        ],
+      ),
+    );
+    return result ?? 'cancel';
+  }
+
+  // Удалить смену (или группу) по shift
+  void _deleteShift(ShiftEntry shift) {
+    final groupId = shift.groupId;
+    if (groupId != null) {
+      for (final k in _shifts.keys.toList()) {
+        _shifts[k]?.removeWhere((s) => s.groupId == groupId);
+        if (_shifts[k]?.isEmpty == true) _shifts.remove(k);
+      }
+    } else {
+      for (final k in _shifts.keys.toList()) {
+        _shifts[k]?.remove(shift);
+        if (_shifts[k]?.isEmpty == true) _shifts.remove(k);
+      }
+    }
+  }
+
+  // Добавить смену с проверкой конфликта
+  Future<void> _addShiftWithConflictCheck(ShiftType type, DateTime date) async {
+    final key = _dateKey(date);
+    final existing = _shifts[key] ?? [];
+    if (existing.length >= 2) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Максимум 2 смены в день')),
+      );
+      return;
+    }
+
+    final entries = _createShiftEntries(type, date);
+    final newShift = entries[0];
+
+    final conflict = _findConflict(newShift);
+    if (conflict != null) {
+      if (!mounted) return;
+      final action = await _showConflictDialog(conflict, newShift);
+      if (action == 'cancel') return;
+      if (action == 'replace') {
+        setState(() {
+          _deleteShift(conflict);
+        });
+      }
+    }
+
+    setState(() {
+      final current = _shifts[key] ?? [];
+      _shifts[key] = [...current, entries[0]];
+      if (entries.length == 2) {
+        final nextKey = _dateKey(date.add(const Duration(days: 1)));
+        final nextExisting = _shifts[nextKey] ?? [];
+        _shifts[nextKey] = [...nextExisting, entries[1]];
+      }
+    });
+    await _saveShifts();
+  }
 
   // Создать смену (с разбиением суток на две записи)
   List<ShiftEntry> _createShiftEntries(ShiftType type, DateTime date) {
@@ -721,24 +819,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildShiftCircle(ShiftType type) {
     return GestureDetector(
       onTap: () async {
-        final key = _dateKey(_selectedDay!);
-        final existing = _shifts[key] ?? [];
-        if (existing.length >= 2) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Максимум 2 смены в день')),
-          );
-          return;
-        }
-        final entries = _createShiftEntries(type, _selectedDay!);
-        setState(() {
-          _shifts[key] = [...existing, entries[0]];
-          if (entries.length == 2) {
-            final nextKey = _dateKey(_selectedDay!.add(const Duration(days: 1)));
-            final nextExisting = _shifts[nextKey] ?? [];
-            _shifts[nextKey] = [...nextExisting, entries[1]];
-          }
-        });
-        await _saveShifts();
+        await _addShiftWithConflictCheck(type, _selectedDay!);
       },
       onLongPress: () => _openSettings(),
       child: Column(
@@ -810,24 +891,7 @@ class _HomeScreenState extends State<HomeScreen> {
           return SimpleDialogOption(
             onPressed: () async {
               Navigator.pop(context);
-              final existing = _shifts[key] ?? [];
-              if (existing.length >= 2) {
-                if (!mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Максимум 2 смены в день')),
-                );
-                return;
-              }
-              final entries = _createShiftEntries(type, _selectedDay!);
-              setState(() {
-                _shifts[key] = [...existing, entries[0]];
-                if (entries.length == 2) {
-                  final nextKey = _dateKey(_selectedDay!.add(const Duration(days: 1)));
-                  final nextExisting = _shifts[nextKey] ?? [];
-                  _shifts[nextKey] = [...nextExisting, entries[1]];
-                }
-              });
-              await _saveShifts();
+              await _addShiftWithConflictCheck(type, _selectedDay!);
             },
             child: Row(
               children: [
