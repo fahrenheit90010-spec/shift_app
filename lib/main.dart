@@ -19,10 +19,8 @@ ThemeData _buildDarkTheme() {
     useMaterial3: true,
     scaffoldBackgroundColor: const Color(0xFF121212),
     colorScheme: const ColorScheme.dark(
-      primary: Color(0xFF64B5F6),
-      secondary: Color(0xFF64B5F6),
-      surface: Color(0xFF1E1E1E),
-      onSurface: Color(0xFFE0E0E0),
+      primary: Color(0xFF64B5F6), secondary: Color(0xFF64B5F6),
+      surface: Color(0xFF1E1E1E), onSurface: Color(0xFFE0E0E0),
     ),
     appBarTheme: const AppBarTheme(backgroundColor: Color(0xFF1E1E1E), foregroundColor: Color(0xFFE0E0E0), elevation: 0),
     cardColor: const Color(0xFF1E1E1E),
@@ -45,7 +43,6 @@ ThemeData _buildLightTheme() {
 
 class ShiftApp extends StatefulWidget {
   const ShiftApp({super.key});
-
   @override
   State<ShiftApp> createState() => _ShiftAppState();
 }
@@ -95,9 +92,7 @@ class _ShiftAppState extends State<ShiftApp> {
 class HomeScreen extends StatefulWidget {
   final ThemeMode themeMode;
   final ValueChanged<ThemeMode> onThemeChanged;
-
   const HomeScreen({super.key, required this.themeMode, required this.onThemeChanged});
-
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
@@ -114,7 +109,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
   double _globalCoefOvertime = 1.0;
   double _globalCoefUndertime = 1.0;
-  int _intervalMinutes = 60;
 
   bool get _isDark => Theme.of(context).brightness == Brightness.dark;
   Color get _bgColor => _isDark ? const Color(0xFF1E1E1E) : Colors.grey.shade100;
@@ -136,9 +130,7 @@ class _HomeScreenState extends State<HomeScreen> {
     List<ShiftType> types = [];
     if (savedTypes != null) {
       for (final s in savedTypes) {
-        try {
-          types.add(ShiftType.fromJson(jsonDecode(s) as Map<String, dynamic>));
-        } catch (_) {}
+        try { types.add(ShiftType.fromJson(jsonDecode(s) as Map<String, dynamic>)); } catch (_) {}
       }
     }
     if (types.isEmpty) types = ShiftType.defaults();
@@ -146,27 +138,28 @@ class _HomeScreenState extends State<HomeScreen> {
     final savedTemplates = prefs.getStringList('custom_templates') ?? [];
     final customTemplates = <ShiftTemplate>[];
     for (final s in savedTemplates) {
-      try {
-        customTemplates.add(ShiftTemplate.fromJson(jsonDecode(s) as Map<String, dynamic>));
-      } catch (_) {}
+      try { customTemplates.add(ShiftTemplate.fromJson(jsonDecode(s) as Map<String, dynamic>)); } catch (_) {}
     }
 
     _globalCoefOvertime = double.tryParse(prefs.getString('coef_overtime') ?? '1.0') ?? 1.0;
     _globalCoefUndertime = double.tryParse(prefs.getString('coef_undertime') ?? '1.0') ?? 1.0;
-    _intervalMinutes = int.tryParse(prefs.getString('interval_minutes') ?? '60') ?? 60;
 
     final savedShifts = prefs.getStringList('shifts') ?? [];
     final map = <String, ShiftEntry>{};
     for (final entry in savedShifts) {
       final parts = entry.split('::');
-      if (parts.length == 2) map[parts[0]] = ShiftEntry.fromStorageString(parts[1]);
+      if (parts.length == 2) {
+        try { map[parts[0]] = ShiftEntry.fromStorageString(parts[1]); } catch (_) {}
+      }
     }
 
     final savedClosed = prefs.getStringList('closed_months') ?? [];
     final closed = <String, MonthRecord>{};
     for (final s in savedClosed) {
-      final rec = MonthRecord.fromStorageString(s);
-      closed['${rec.year}-${rec.month}'] = rec;
+      try {
+        final rec = MonthRecord.fromStorageString(s);
+        closed['${rec.year}-${rec.month}'] = rec;
+      } catch (_) {}
     }
 
     setState(() {
@@ -216,7 +209,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('coef_overtime', _globalCoefOvertime.toString());
     await prefs.setString('coef_undertime', _globalCoefUndertime.toString());
-    await prefs.setString('interval_minutes', _intervalMinutes.toString());
   }
 
   Future<void> _saveClosedMonths() async {
@@ -402,7 +394,6 @@ class _HomeScreenState extends State<HomeScreen> {
         themeMode: widget.themeMode,
         globalCoefOvertime: _globalCoefOvertime,
         globalCoefUndertime: _globalCoefUndertime,
-        intervalMinutes: _intervalMinutes,
         onThemeChanged: widget.onThemeChanged,
         onShiftTypesChanged: (newTypes) async {
           setState(() => _shiftTypes = newTypes);
@@ -412,11 +403,10 @@ class _HomeScreenState extends State<HomeScreen> {
           setState(() => _templates = newTemplates);
           await _saveTemplates();
         },
-        onGlobalSettingsChanged: (coefOver, coefUnder, interval) async {
+        onGlobalSettingsChanged: (coefOver, coefUnder) async {
           setState(() {
             _globalCoefOvertime = coefOver;
             _globalCoefUndertime = coefUnder;
-            _intervalMinutes = interval;
           });
           await _saveGlobalSettings();
         },
@@ -425,7 +415,7 @@ class _HomeScreenState extends State<HomeScreen> {
     ));
   }
 
-    Future<void> _generateFromTemplate(ShiftTemplate template, DateTime startDate, String typeId, int months) async {
+  Future<void> _generateFromTemplate(ShiftTemplate template, DateTime startDate, String typeId, int months) async {
     final endDate = DateTime(startDate.year, startDate.month + months, 0);
     final newShifts = <String, ShiftEntry>{};
     int overwritten = 0;
@@ -438,17 +428,16 @@ class _HomeScreenState extends State<HomeScreen> {
       final step = template.cycle[i % template.cycle.length];
       if (step == 'rest') continue;
 
-      // Для своих шаблонов step = id типа ('day','night','daily'). Для предустановленных step = 'work'.
       final effectiveTypeId = (step == 'work') ? typeId : step;
       final type = _getShiftType(effectiveTypeId);
       if (type == null) continue;
 
       final key = _dateKey(date);
-      if (_shifts.containsKey(key)) {
-        overwritten++;
-        continue;
-      }
-      newShifts[key] = ShiftEntry(typeId: type.id, actualHours: type.plannedHours);
+      if (_shifts.containsKey(key)) { overwritten++; continue; }
+
+      final start = DateTime(date.year, date.month, date.day, type.startHour, type.startMinute);
+      final end = start.add(Duration(minutes: (type.plannedHours * 60).round()));
+      newShifts[key] = ShiftEntry(typeId: type.id, startTime: start, endTime: end);
     }
 
     if (overwritten > 0) {
@@ -476,7 +465,9 @@ class _HomeScreenState extends State<HomeScreen> {
         final type = _getShiftType(effectiveTypeId);
         if (type == null) continue;
         final key = _dateKey(date);
-        newShifts[key] = ShiftEntry(typeId: type.id, actualHours: type.plannedHours);
+        final start = DateTime(date.year, date.month, date.day, type.startHour, type.startMinute);
+        final end = start.add(Duration(minutes: (type.plannedHours * 60).round()));
+        newShifts[key] = ShiftEntry(typeId: type.id, startTime: start, endTime: end);
       }
     }
 
@@ -606,7 +597,11 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildShiftCircle(ShiftType type) {
     return GestureDetector(
       onTap: () async {
-        setState(() { _shifts[_dateKey(_selectedDay!)] = ShiftEntry(typeId: type.id, actualHours: type.plannedHours); });
+        final start = DateTime(_selectedDay!.year, _selectedDay!.month, _selectedDay!.day, type.startHour, type.startMinute);
+        final end = start.add(Duration(minutes: (type.plannedHours * 60).round()));
+        setState(() {
+          _shifts[_dateKey(_selectedDay!)] = ShiftEntry(typeId: type.id, startTime: start, endTime: end);
+        });
         await _saveShifts();
       },
       onLongPress: () => _openSettings(),
@@ -646,6 +641,8 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildShiftCard(String key, ShiftEntry shift) {
     final type = _getShiftType(shift.typeId);
     final amount = _calculateAmount(shift, type);
+    final startStr = '${shift.startTime.hour.toString().padLeft(2, '0')}:${shift.startTime.minute.toString().padLeft(2, '0')}';
+    final endStr = '${shift.endTime.hour.toString().padLeft(2, '0')}:${shift.endTime.minute.toString().padLeft(2, '0')}';
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -672,36 +669,61 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 8),
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Фактические часы', style: TextStyle(fontSize: 12, color: _subtextColor)),
-                  Text('${shift.actualHours.toStringAsFixed(1)} ч', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: _textColor)),
-                ],
-              ),
-              Row(
-                children: [
-                  _buildIntervalButton(Icons.remove, () => _changeHours(key, shift, -1)),
-                  const SizedBox(width: 8),
-                  _buildIntervalButton(Icons.add, () => _changeHours(key, shift, 1)),
-                  const SizedBox(width: 8),
-                  DropdownButton<int>(
-                    value: _intervalMinutes,
-                    dropdownColor: _isDark ? const Color(0xFF1E1E1E) : Colors.white,
-                    style: TextStyle(color: _textColor),
-                    items: const [
-                      DropdownMenuItem(value: 15, child: Text('15 мин')),
-                      DropdownMenuItem(value: 30, child: Text('30 мин')),
-                      DropdownMenuItem(value: 60, child: Text('1 час')),
+              Expanded(
+                child: GestureDetector(
+                  onTap: () async {
+                    final picked = await _pickTime(shift.startTime);
+                    if (picked != null) {
+                      setState(() {
+                        final diff = shift.endTime.difference(shift.startTime);
+                        shift.startTime = picked;
+                        shift.endTime = picked.add(diff);
+                      });
+                      await _saveShifts();
+                    }
+                  },
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Начало', style: TextStyle(fontSize: 12, color: _subtextColor)),
+                      Text(startStr, style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: _textColor)),
                     ],
-                    onChanged: (value) async {
-                      if (value != null) { setState(() => _intervalMinutes = value); await _saveGlobalSettings(); }
-                    },
                   ),
-                ],
+                ),
               ),
+              Expanded(
+                child: GestureDetector(
+                  onTap: () async {
+                    final picked = await _pickTime(shift.endTime);
+                    if (picked != null) {
+                      setState(() {
+                        var newEnd = picked;
+                        if (!newEnd.isAfter(shift.startTime)) {
+                          newEnd = newEnd.add(const Duration(days: 1));
+                        }
+                        shift.endTime = newEnd;
+                      });
+                      await _saveShifts();
+                    }
+                  },
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Конец', style: TextStyle(fontSize: 12, color: _subtextColor)),
+                      Text(endStr, style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: _textColor)),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Фактические часы', style: TextStyle(fontSize: 12, color: _subtextColor)),
+              Text('${shift.actualHours.toStringAsFixed(1)} ч', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: _textColor)),
             ],
           ),
           const SizedBox(height: 12),
@@ -714,15 +736,14 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildIntervalButton(IconData icon, VoidCallback onTap) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        width: 40, height: 40,
-        decoration: BoxDecoration(color: _isDark ? const Color(0xFF2C3E50) : Colors.blue, borderRadius: BorderRadius.circular(10)),
-        child: Icon(icon, color: _isDark ? const Color(0xFF90CAF9) : Colors.white, size: 20),
-      ),
+  Future<DateTime?> _pickTime(DateTime initial) async {
+    final now = DateTime.now();
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(now),
     );
+    if (picked == null) return null;
+    return DateTime(initial.year, initial.month, initial.day, picked.hour, picked.minute);
   }
 
   void _showShiftMenu(String key, ShiftEntry shift) {
@@ -760,6 +781,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final rateController = TextEditingController(text: (shift.overrideRateValue ?? type.rateValue).toStringAsFixed(0));
     final coefOverController = TextEditingController(text: (shift.overrideCoefOvertime ?? type.coefOvertime).toString());
     final coefUnderController = TextEditingController(text: (shift.overrideCoefUndertime ?? type.coefUndertime).toString());
+    final breakController = TextEditingController(text: shift.breakMinutes.toString());
     RateType selectedType = shift.overrideRateType ?? type.rateType;
 
     showDialog(
@@ -783,6 +805,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 TextField(controller: coefOverController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Коэфф. переработки')),
                 const SizedBox(height: 8),
                 TextField(controller: coefUnderController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Коэфф. недоработки')),
+                const SizedBox(height: 8),
+                TextField(controller: breakController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Перерыв (мин)')),
               ],
             ),
           ),
@@ -795,6 +819,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   shift.overrideRateType = selectedType;
                   shift.overrideCoefOvertime = double.tryParse(coefOverController.text.trim());
                   shift.overrideCoefUndertime = double.tryParse(coefUnderController.text.trim());
+                  shift.breakMinutes = int.tryParse(breakController.text.trim()) ?? 0;
                 });
                 await _saveShifts();
                 Navigator.pop(context);
@@ -805,15 +830,6 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
-  }
-
-  Future<void> _changeHours(String key, ShiftEntry shift, int direction) async {
-    final delta = _intervalMinutes / 60.0 * direction;
-    setState(() {
-      shift.actualHours += delta;
-      if (shift.actualHours < 0) shift.actualHours = 0;
-    });
-    await _saveShifts();
   }
 
   double _calculateAmount(ShiftEntry shift, ShiftType? type) {
@@ -973,17 +989,16 @@ class SettingsScreen extends StatefulWidget {
   final ThemeMode themeMode;
   final double globalCoefOvertime;
   final double globalCoefUndertime;
-  final int intervalMinutes;
   final ValueChanged<ThemeMode> onThemeChanged;
   final ValueChanged<List<ShiftType>> onShiftTypesChanged;
   final ValueChanged<List<ShiftTemplate>> onTemplatesChanged;
-  final Function(double, double, int) onGlobalSettingsChanged;
+  final Function(double, double) onGlobalSettingsChanged;
   final Future<void> Function(ShiftTemplate, DateTime, String, int) onGenerateTemplate;
 
   const SettingsScreen({
     super.key,
     required this.shiftTypes, required this.templates, required this.themeMode,
-    required this.globalCoefOvertime, required this.globalCoefUndertime, required this.intervalMinutes,
+    required this.globalCoefOvertime, required this.globalCoefUndertime,
     required this.onThemeChanged, required this.onShiftTypesChanged, required this.onTemplatesChanged,
     required this.onGlobalSettingsChanged, required this.onGenerateTemplate,
   });
@@ -997,7 +1012,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late List<ShiftTemplate> _templates;
   late double _coefOver;
   late double _coefUnder;
-  late int _interval;
 
   @override
   void initState() {
@@ -1006,7 +1020,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _templates = List.from(widget.templates);
     _coefOver = widget.globalCoefOvertime;
     _coefUnder = widget.globalCoefUndertime;
-    _interval = widget.intervalMinutes;
   }
 
   @override
@@ -1036,23 +1049,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 24),
           const Text('Коэффициенты (глобальные)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
-          _buildNumberField('Переработка', _coefOver, (v) { setState(() => _coefOver = v); widget.onGlobalSettingsChanged(_coefOver, _coefUnder, _interval); }),
-          _buildNumberField('Недоработка', _coefUnder, (v) { setState(() => _coefUnder = v); widget.onGlobalSettingsChanged(_coefOver, _coefUnder, _interval); }),
-          const SizedBox(height: 24),
-          const Text('Интервал ±', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          DropdownButtonFormField<int>(
-            value: _interval,
-            decoration: const InputDecoration(labelText: 'Шаг изменения часов'),
-            items: const [
-              DropdownMenuItem(value: 15, child: Text('15 минут')),
-              DropdownMenuItem(value: 30, child: Text('30 минут')),
-              DropdownMenuItem(value: 60, child: Text('1 час')),
-            ],
-            onChanged: (value) {
-              if (value != null) { setState(() => _interval = value); widget.onGlobalSettingsChanged(_coefOver, _coefUnder, _interval); }
-            },
-          ),
+          _buildNumberField('Переработка', _coefOver, (v) { setState(() => _coefOver = v); widget.onGlobalSettingsChanged(_coefOver, _coefUnder); }),
+          _buildNumberField('Недоработка', _coefUnder, (v) { setState(() => _coefUnder = v); widget.onGlobalSettingsChanged(_coefOver, _coefUnder); }),
         ],
       ),
     );
@@ -1070,6 +1068,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Widget _buildShiftTypeTile(ShiftType type) {
+    final startStr = '${type.startHour.toString().padLeft(2, '0')}:${type.startMinute.toString().padLeft(2, '0')}';
     return Card(
       child: ListTile(
         leading: Container(
@@ -1078,7 +1077,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           child: Center(child: Text(type.letter, style: const TextStyle(fontWeight: FontWeight.bold))),
         ),
         title: Text(type.name),
-        subtitle: Text('${type.plannedHours} ч • ${type.rateValue.toStringAsFixed(0)} ₽ ${type.rateType == RateType.perHour ? "/ч" : "/смена"}'),
+        subtitle: Text('$startStr • ${type.plannedHours} ч • ${type.rateValue.toStringAsFixed(0)} ₽ ${type.rateType == RateType.perHour ? "/ч" : "/смена"}'),
         trailing: IconButton(icon: const Icon(Icons.edit), onPressed: () => _editShiftType(type)),
       ),
     );
@@ -1149,7 +1148,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _createCustomTemplate() {
     final nameController = TextEditingController();
-    final steps = <String>[]; // typeId или 'rest'
+    final steps = <String>[];
 
     showDialog(
       context: context,
@@ -1296,16 +1295,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   },
                 ),
                 const SizedBox(height: 8),
-                // Показываем выбор типа ТОЛЬКО для предустановленных шаблонов
                 if (!template.isCustom)
                   DropdownButtonFormField<String>(
                     value: typeId,
                     decoration: const InputDecoration(labelText: 'Тип смены для рабочих дней'),
                     items: _shiftTypes.map((t) => DropdownMenuItem(value: t.id, child: Text(t.name))).toList(),
                     onChanged: (value) {
-                      if (value != null) {
-                        setDialogState(() => typeId = value);
-                      }
+                      if (value != null) setDialogState(() => typeId = value);
                     },
                   ),
                 if (!template.isCustom) const SizedBox(height: 8),
@@ -1326,7 +1322,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
             TextButton(
               onPressed: () {
-                // Для предустановленных typeId обязателен, для своих — нет
                 if (!template.isCustom && typeId == null) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(content: Text('Выбери тип смены')),
@@ -1354,6 +1349,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     RateType selectedRateType = existing?.rateType ?? RateType.perHour;
     bool countInSalary = existing?.countInSalary ?? true;
     Color selectedColor = existing?.color ?? const Color(0xFF90CAF9);
+    int startHour = existing?.startHour ?? 8;
+    int startMinute = existing?.startMinute ?? 0;
 
     showDialog(
       context: context,
@@ -1369,6 +1366,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 TextField(controller: letterController, maxLength: 1, decoration: const InputDecoration(labelText: 'Буква')),
                 TextField(controller: hoursController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Плановые часы')),
                 const SizedBox(height: 8),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Время начала'),
+                  subtitle: Text('${startHour.toString().padLeft(2, '0')}:${startMinute.toString().padLeft(2, '0')}'),
+                  trailing: const Icon(Icons.access_time),
+                  onTap: () async {
+                    final picked = await showTimePicker(
+                      context: context,
+                      initialTime: TimeOfDay(hour: startHour, minute: startMinute),
+                    );
+                    if (picked != null) {
+                      setDialogState(() {
+                        startHour = picked.hour;
+                        startMinute = picked.minute;
+                      });
+                    }
+                  },
+                ),
                 TextField(controller: rateController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Ставка')),
                 const SizedBox(height: 8),
                 DropdownButtonFormField<RateType>(
@@ -1421,6 +1436,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   rateType: selectedRateType,
                   coefOvertime: double.tryParse(coefOverController.text) ?? 1.0,
                   coefUndertime: double.tryParse(coefUnderController.text) ?? 1.0,
+                  startHour: startHour,
+                  startMinute: startMinute,
                 );
                 setState(() {
                   if (existing == null) { _shiftTypes.add(newType); }

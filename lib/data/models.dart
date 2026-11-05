@@ -7,7 +7,6 @@ class Features {
   static const bool cloudSync = false;
   static const bool showMyApps = false;
   static const bool proSectionVisible = true;
-  // Pro: сейчас true (делаем всё целиком), потом поставим false
   static const bool multipleTemplates = true;
   static const bool customTemplates = true;
   static const bool categories = true;
@@ -24,18 +23,21 @@ class ShiftType {
   final RateType rateType;
   final double coefOvertime;
   final double coefUndertime;
+  final int startHour;
+  final int startMinute;
 
   const ShiftType({
     required this.id, required this.name, required this.letter, required this.color,
     required this.plannedHours, required this.countInSalary,
     required this.rateValue, required this.rateType,
     required this.coefOvertime, required this.coefUndertime,
+    this.startHour = 8, this.startMinute = 0,
   });
 
   static List<ShiftType> defaults() => [
-    const ShiftType(id: 'day', name: 'День', letter: 'Д', color: Color(0xFF90CAF9), plannedHours: 8, countInSalary: true, rateValue: 300, rateType: RateType.perHour, coefOvertime: 1.0, coefUndertime: 1.0),
-    const ShiftType(id: 'night', name: 'Ночь', letter: 'Н', color: Color(0xFFCE93D8), plannedHours: 12, countInSalary: true, rateValue: 400, rateType: RateType.perHour, coefOvertime: 1.0, coefUndertime: 1.0),
-    const ShiftType(id: 'daily', name: 'Сутки', letter: 'С', color: Color(0xFFFFCC80), plannedHours: 24, countInSalary: true, rateValue: 5000, rateType: RateType.perShift, coefOvertime: 1.0, coefUndertime: 1.0),
+    const ShiftType(id: 'day', name: 'День', letter: 'Д', color: Color(0xFF90CAF9), plannedHours: 8, countInSalary: true, rateValue: 300, rateType: RateType.perHour, coefOvertime: 1.0, coefUndertime: 1.0, startHour: 8),
+    const ShiftType(id: 'night', name: 'Ночь', letter: 'Н', color: Color(0xFFCE93D8), plannedHours: 12, countInSalary: true, rateValue: 400, rateType: RateType.perHour, coefOvertime: 1.0, coefUndertime: 1.0, startHour: 20),
+    const ShiftType(id: 'daily', name: 'Сутки', letter: 'С', color: Color(0xFFFFCC80), plannedHours: 24, countInSalary: true, rateValue: 5000, rateType: RateType.perShift, coefOvertime: 1.0, coefUndertime: 1.0, startHour: 8),
     const ShiftType(id: 'sick', name: 'Больничный', letter: 'Б', color: Color(0xFFEF9A9A), plannedHours: 0, countInSalary: false, rateValue: 0, rateType: RateType.perHour, coefOvertime: 1.0, coefUndertime: 1.0),
     const ShiftType(id: 'vacation', name: 'Отпуск', letter: 'О', color: Color(0xFFA5D6A7), plannedHours: 0, countInSalary: false, rateValue: 0, rateType: RateType.perHour, coefOvertime: 1.0, coefUndertime: 1.0),
   ];
@@ -45,6 +47,7 @@ class ShiftType {
     'plannedHours': plannedHours, 'countInSalary': countInSalary,
     'rateValue': rateValue, 'rateType': rateType.index,
     'coefOvertime': coefOvertime, 'coefUndertime': coefUndertime,
+    'startHour': startHour, 'startMinute': startMinute,
   };
 
   factory ShiftType.fromJson(Map<String, dynamic> json) => ShiftType(
@@ -56,6 +59,8 @@ class ShiftType {
     rateType: RateType.values[json['rateType'] ?? 0],
     coefOvertime: (json['coefOvertime'] ?? 1.0).toDouble(),
     coefUndertime: (json['coefUndertime'] ?? 1.0).toDouble(),
+    startHour: json['startHour'] ?? 8,
+    startMinute: json['startMinute'] ?? 0,
   );
 }
 
@@ -63,31 +68,45 @@ enum RateType { perHour, perShift }
 
 class ShiftEntry {
   String typeId;
-  double actualHours;
+  DateTime startTime;
+  DateTime endTime;
+  int breakMinutes;
+  String? groupId;
+  bool isContinuation;
   double? overrideRateValue;
   RateType? overrideRateType;
   double? overrideCoefOvertime;
   double? overrideCoefUndertime;
 
   ShiftEntry({
-    required this.typeId, required this.actualHours,
+    required this.typeId, required this.startTime, required this.endTime,
+    this.breakMinutes = 0, this.groupId, this.isContinuation = false,
     this.overrideRateValue, this.overrideRateType,
     this.overrideCoefOvertime, this.overrideCoefUndertime,
   });
 
+  double get actualHours {
+    final diff = endTime.difference(startTime).inMinutes - breakMinutes;
+    return diff > 0 ? diff / 60.0 : 0;
+  }
+
   String toStorageString() {
-    return '$typeId|$actualHours|${overrideRateValue ?? ''}|${overrideRateType?.index ?? ''}|${overrideCoefOvertime ?? ''}|${overrideCoefUndertime ?? ''}';
+    return '$typeId|${startTime.toIso8601String()}|${endTime.toIso8601String()}|$breakMinutes|${groupId ?? ''}|$isContinuation|${overrideRateValue ?? ''}|${overrideRateType?.index ?? ''}|${overrideCoefOvertime ?? ''}|${overrideCoefUndertime ?? ''}';
   }
 
   factory ShiftEntry.fromStorageString(String s) {
     final parts = s.split('|');
     return ShiftEntry(
       typeId: parts[0],
-      actualHours: double.tryParse(parts[1]) ?? 0,
-      overrideRateValue: parts.length > 2 && parts[2].isNotEmpty ? double.tryParse(parts[2]) : null,
-      overrideRateType: parts.length > 3 && parts[3].isNotEmpty ? RateType.values[int.parse(parts[3])] : null,
-      overrideCoefOvertime: parts.length > 4 && parts[4].isNotEmpty ? double.tryParse(parts[4]) : null,
-      overrideCoefUndertime: parts.length > 5 && parts[5].isNotEmpty ? double.tryParse(parts[5]) : null,
+      startTime: DateTime.parse(parts[1]),
+      endTime: DateTime.parse(parts[2]),
+      breakMinutes: int.tryParse(parts[3]) ?? 0,
+      groupId: parts.length > 4 && parts[4].isNotEmpty ? parts[4] : null,
+      isContinuation: parts.length > 5 && parts[5] == 'true',
+      overrideRateValue: parts.length > 6 && parts[6].isNotEmpty ? double.tryParse(parts[6]) : null,
+      overrideRateType: parts.length > 7 && parts[7].isNotEmpty ? RateType.values[int.parse(parts[7])] : null,
+      overrideCoefOvertime: parts.length > 8 && parts[8].isNotEmpty ? double.tryParse(parts[8]) : null,
+      overrideCoefUndertime: parts.length > 9 && parts[9].isNotEmpty ? double.tryParse(parts[9]) : null,
     );
   }
 }
@@ -128,18 +147,16 @@ class MonthRecord {
   }
 }
 
-// Шаг цикла: тип смены или 'rest'
 class TemplateStep {
-  final String? typeId; // null = отдых
+  final String? typeId;
   const TemplateStep({this.typeId});
   bool get isRest => typeId == null;
 }
 
-// Шаблон цикла (фиксированный или свой)
 class ShiftTemplate {
   final String id;
   final String name;
-  final List<String> cycle; // список typeId или 'rest'
+  final List<String> cycle;
   final String description;
   final int priority;
   final bool isCustom;
@@ -163,8 +180,7 @@ class ShiftTemplate {
   };
 
   factory ShiftTemplate.fromJson(Map<String, dynamic> json) => ShiftTemplate(
-    id: json['id'],
-    name: json['name'],
+    id: json['id'], name: json['name'],
     cycle: List<String>.from(json['cycle']),
     description: json['description'] ?? '',
     priority: json['priority'] ?? 1,
