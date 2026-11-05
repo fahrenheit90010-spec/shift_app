@@ -103,12 +103,13 @@ class _HomeScreenState extends State<HomeScreen> {
 
   List<ShiftType> _shiftTypes = [];
   List<ShiftTemplate> _templates = [];
-  final Map<String, ShiftEntry> _shifts = {};
+  final Map<String, List<ShiftEntry>> _shifts = {};
   List<Holiday> _holidays = [];
   Map<String, MonthRecord> _closedMonths = {};
 
   double _globalCoefOvertime = 1.0;
   double _globalCoefUndertime = 1.0;
+  bool _salaryFromStart = true;
 
   bool get _isDark => Theme.of(context).brightness == Brightness.dark;
   Color get _bgColor => _isDark ? const Color(0xFF1E1E1E) : Colors.grey.shade100;
@@ -143,13 +144,17 @@ class _HomeScreenState extends State<HomeScreen> {
 
     _globalCoefOvertime = double.tryParse(prefs.getString('coef_overtime') ?? '1.0') ?? 1.0;
     _globalCoefUndertime = double.tryParse(prefs.getString('coef_undertime') ?? '1.0') ?? 1.0;
+    _salaryFromStart = prefs.getString('salary_from_start') != 'false';
 
     final savedShifts = prefs.getStringList('shifts') ?? [];
-    final map = <String, ShiftEntry>{};
+    final map = <String, List<ShiftEntry>>{};
     for (final entry in savedShifts) {
       final parts = entry.split('::');
       if (parts.length == 2) {
-        try { map[parts[0]] = ShiftEntry.fromStorageString(parts[1]); } catch (_) {}
+        try {
+          final list = jsonDecode(parts[1]) as List;
+          map[parts[0]] = list.map((e) => ShiftEntry.fromStorageString(e as String)).toList();
+        } catch (_) {}
       }
     }
 
@@ -188,7 +193,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _saveShifts() async {
     final prefs = await SharedPreferences.getInstance();
-    final list = _shifts.entries.map((e) => '${e.key}::${e.value.toStorageString()}').toList();
+    final list = _shifts.entries.map((e) {
+      final jsonList = e.value.map((s) => s.toStorageString()).toList();
+      return '${e.key}::${jsonEncode(jsonList)}';
+    }).toList();
     await prefs.setStringList('shifts', list);
   }
 
@@ -209,6 +217,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('coef_overtime', _globalCoefOvertime.toString());
     await prefs.setString('coef_undertime', _globalCoefUndertime.toString());
+    await prefs.setString('salary_from_start', _salaryFromStart.toString());
   }
 
   Future<void> _saveClosedMonths() async {
@@ -219,30 +228,48 @@ class _HomeScreenState extends State<HomeScreen> {
 
   bool _isMonthClosed(int year, int month) => _closedMonths.containsKey('$year-$month');
 
-  Future<void> _closeMonth(int year, int month) async {
-    final entries = _shifts.entries.where((e) {
-      final parts = e.key.split('-');
-      return int.parse(parts[0]) == year && int.parse(parts[1]) == month;
-    }).toList();
+  DateTime _salaryDateFor(ShiftEntry shift) {
+    return _salaryFromStart ? shift.startTime : shift.endTime;
+  }
 
+  Future<void> _closeMonth(int year, int month) async {
     int workShifts = 0, sickDays = 0, vacationDays = 0;
     double totalHours = 0, overtime = 0, undertime = 0, totalAmount = 0;
     final ratesUsed = <String>{};
+    final countedGroups = <String>{};
 
-    for (final e in entries) {
-      final shift = e.value;
-      final type = _getShiftType(shift.typeId);
-      if (type == null) continue;
-      if (type.id == 'sick') { sickDays++; continue; }
-      if (type.id == 'vacation') { vacationDays++; continue; }
-      if (!type.countInSalary) continue;
-      workShifts++;
-      totalHours += shift.actualHours;
-      final diff = shift.actualHours - type.plannedHours;
-      if (diff > 0) overtime += diff;
-      if (diff < 0) undertime += -diff;
-      totalAmount += _calculateAmount(shift, type);
-      ratesUsed.add('${type.rateValue.toStringAsFixed(0)} ₽ ${type.rateType == RateType.perHour ? "/ч" : "/смена"}');
+    for (final e in _shifts.entries) {
+      for (final shift in e.value) {
+        final salaryDate = _salaryDateFor(shift);
+        if (salaryDate.year != year || salaryDate.month != month) continue;
+
+        final type = _getShiftType(shift.typeId);
+        if (type == null) continue;
+        if (type.id == 'sick') { sickDays++; continue; }
+        if (type.id == 'vacation') { vacationDays++; continue; }
+        if (!type.countInSalary) continue;
+        if (shift.groupId != null) {
+          if (countedGroups.contains(shift.groupId)) continue;
+          countedGroups.add(shift.groupId!);
+          final isSalaryRecord = _salaryFromStart ? !shift.isContinuation : shift.isContinuation;
+          if (isSalaryRecord) {
+            workShifts++;
+            totalAmount += _calculateAmountForGroup(shift);
+          }
+          totalHours += shift.actualHours;
+          final diff = shift.actualHours - type.plannedHours;
+          if (diff > 0) overtime += diff;
+          if (diff < 0) undertime += -diff;
+        } else {
+          workShifts++;
+          totalHours += shift.actualHours;
+          final diff = shift.actualHours - type.plannedHours;
+          if (diff > 0) overtime += diff;
+          if (diff < 0) undertime += -diff;
+          totalAmount += _calculateAmount(shift, type);
+        }
+        ratesUsed.add('${type.rateValue.toStringAsFixed(0)} ₽ ${type.rateType == RateType.perHour ? "/ч" : "/смена"}');
+      }
     }
 
     final record = MonthRecord(
@@ -276,6 +303,27 @@ class _HomeScreenState extends State<HomeScreen> {
     final holiday = _getHoliday(day);
     if (holiday != null) return !holiday.isWorkday;
     return day.weekday == DateTime.saturday || day.weekday == DateTime.sunday;
+  }
+
+  // Создать смену (с разбиением суток на две записи)
+  List<ShiftEntry> _createShiftEntries(ShiftType type, DateTime date) {
+    final start = DateTime(date.year, date.month, date.day, type.startHour, type.startMinute);
+    final totalMinutes = (type.plannedHours * 60).round();
+    final end = start.add(Duration(minutes: totalMinutes));
+
+    // Если смена пересекает полночь (end на следующий день) — разбиваем на две записи
+    final crossesMidnight = end.day != start.day;
+
+    if (crossesMidnight) {
+      final midnight = DateTime(start.year, start.month, start.day + 1);
+      final groupId = 'group_${DateTime.now().millisecondsSinceEpoch}';
+      return [
+        ShiftEntry(typeId: type.id, startTime: start, endTime: midnight, groupId: groupId, isContinuation: false),
+        ShiftEntry(typeId: type.id, startTime: midnight, endTime: end, groupId: groupId, isContinuation: true),
+      ];
+    } else {
+      return [ShiftEntry(typeId: type.id, startTime: start, endTime: end)];
+    }
   }
 
   @override
@@ -356,27 +404,42 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Map<String, dynamic> _computeStats(int year, int month) {
-    final entries = _shifts.entries.where((e) {
-      final parts = e.key.split('-');
-      return int.parse(parts[0]) == year && int.parse(parts[1]) == month;
-    }).toList();
-
     int workShifts = 0, sickDays = 0, vacationDays = 0;
     double totalHours = 0, overtime = 0, undertime = 0, totalAmount = 0;
+    final countedGroups = <String>{};
 
-    for (final e in entries) {
-      final shift = e.value;
-      final type = _getShiftType(shift.typeId);
-      if (type == null) continue;
-      if (type.id == 'sick') { sickDays++; continue; }
-      if (type.id == 'vacation') { vacationDays++; continue; }
-      if (!type.countInSalary) continue;
-      workShifts++;
-      totalHours += shift.actualHours;
-      final diff = shift.actualHours - type.plannedHours;
-      if (diff > 0) overtime += diff;
-      if (diff < 0) undertime += -diff;
-      totalAmount += _calculateAmount(shift, type);
+    for (final e in _shifts.entries) {
+      for (final shift in e.value) {
+        final salaryDate = _salaryDateFor(shift);
+        if (salaryDate.year != year || salaryDate.month != month) continue;
+        final type = _getShiftType(shift.typeId);
+        if (type == null) continue;
+        if (type.id == 'sick') { sickDays++; continue; }
+        if (type.id == 'vacation') { vacationDays++; continue; }
+        if (!type.countInSalary) continue;
+        // Для смен через полночь (groupId): считаем только на salaryDate
+        if (shift.groupId != null) {
+          if (countedGroups.contains(shift.groupId)) continue;
+          countedGroups.add(shift.groupId!);
+          // Сумма только для той записи, которая попадает на salaryDate
+          final isSalaryRecord = _salaryFromStart ? !shift.isContinuation : shift.isContinuation;
+          if (isSalaryRecord) {
+            workShifts++;
+            totalAmount += _calculateAmountForGroup(shift);
+          }
+          totalHours += shift.actualHours;
+          final diff = shift.actualHours - type.plannedHours;
+          if (diff > 0) overtime += diff;
+          if (diff < 0) undertime += -diff;
+        } else {
+          workShifts++;
+          totalHours += shift.actualHours;
+          final diff = shift.actualHours - type.plannedHours;
+          if (diff > 0) overtime += diff;
+          if (diff < 0) undertime += -diff;
+          totalAmount += _calculateAmount(shift, type);
+        }
+      }
     }
 
     return {
@@ -394,6 +457,7 @@ class _HomeScreenState extends State<HomeScreen> {
         themeMode: widget.themeMode,
         globalCoefOvertime: _globalCoefOvertime,
         globalCoefUndertime: _globalCoefUndertime,
+        salaryFromStart: _salaryFromStart,
         onThemeChanged: widget.onThemeChanged,
         onShiftTypesChanged: (newTypes) async {
           setState(() => _shiftTypes = newTypes);
@@ -403,10 +467,11 @@ class _HomeScreenState extends State<HomeScreen> {
           setState(() => _templates = newTemplates);
           await _saveTemplates();
         },
-        onGlobalSettingsChanged: (coefOver, coefUnder) async {
+        onGlobalSettingsChanged: (coefOver, coefUnder, fromStart) async {
           setState(() {
             _globalCoefOvertime = coefOver;
             _globalCoefUndertime = coefUnder;
+            _salaryFromStart = fromStart;
           });
           await _saveGlobalSettings();
         },
@@ -417,7 +482,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _generateFromTemplate(ShiftTemplate template, DateTime startDate, String typeId, int months) async {
     final endDate = DateTime(startDate.year, startDate.month + months, 0);
-    final newShifts = <String, ShiftEntry>{};
+    final newShifts = <String, List<ShiftEntry>>{};
     int overwritten = 0;
 
     for (int i = 0; i <= endDate.difference(startDate).inDays; i++) {
@@ -435,9 +500,14 @@ class _HomeScreenState extends State<HomeScreen> {
       final key = _dateKey(date);
       if (_shifts.containsKey(key)) { overwritten++; continue; }
 
-      final start = DateTime(date.year, date.month, date.day, type.startHour, type.startMinute);
-      final end = start.add(Duration(minutes: (type.plannedHours * 60).round()));
-      newShifts[key] = ShiftEntry(typeId: type.id, startTime: start, endTime: end);
+      final entries = _createShiftEntries(type, date);
+      newShifts[key] = entries;
+
+      // Если это сутки — вторая запись идёт на следующий день
+      if (entries.length == 2) {
+        final nextKey = _dateKey(date.add(const Duration(days: 1)));
+        newShifts[nextKey] = [entries[1]];
+      }
     }
 
     if (overwritten > 0) {
@@ -465,13 +535,20 @@ class _HomeScreenState extends State<HomeScreen> {
         final type = _getShiftType(effectiveTypeId);
         if (type == null) continue;
         final key = _dateKey(date);
-        final start = DateTime(date.year, date.month, date.day, type.startHour, type.startMinute);
-        final end = start.add(Duration(minutes: (type.plannedHours * 60).round()));
-        newShifts[key] = ShiftEntry(typeId: type.id, startTime: start, endTime: end);
+        final entries = _createShiftEntries(type, date);
+        newShifts[key] = entries;
+        if (entries.length == 2) {
+          final nextKey = _dateKey(date.add(const Duration(days: 1)));
+          newShifts[nextKey] = [entries[1]];
+        }
       }
     }
 
-    setState(() => _shifts.addAll(newShifts));
+    setState(() {
+      for (final e in newShifts.entries) {
+        _shifts[e.key] = e.value;
+      }
+    });
     await _saveShifts();
 
     if (!mounted) return;
@@ -530,26 +607,73 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildDayCell(DateTime day, {bool isSelected = false, bool isOutside = false}) {
     final key = _dateKey(day);
-    final shift = _shifts[key];
-    final shiftType = shift != null ? _getShiftType(shift.typeId) : null;
+    final shifts = _shifts[key] ?? [];
     final isRed = _isRedDay(day);
     final isToday = isSameDay(day, DateTime.now());
     final isClosed = _isMonthClosed(day.year, day.month);
+
+    // Отделяем «свои» смены от «продолжений»
+    final ownShifts = shifts.where((s) => !s.isContinuation).toList();
+    final continuations = shifts.where((s) => s.isContinuation).toList();
+
+    Widget? background;
+    if (ownShifts.length == 1) {
+      final type = _getShiftType(ownShifts[0].typeId);
+      if (type != null) {
+        background = Container(decoration: BoxDecoration(color: type.color, shape: BoxShape.circle));
+      }
+    } else if (ownShifts.length >= 2) {
+      final type1 = _getShiftType(ownShifts[0].typeId);
+      final type2 = _getShiftType(ownShifts[1].typeId);
+      if (type1 != null && type2 != null) {
+        background = ClipOval(
+          child: Transform.rotate(
+            angle: 0.785398,
+            child: Row(
+              children: [
+                Expanded(child: Container(color: type1.color)),
+                Expanded(child: Container(color: type2.color)),
+              ],
+            ),
+          ),
+        );
+      }
+    }
+
+    // Если есть продолжение — маленькая точка (даже если есть «своя» смена)
+    Widget? continuationDot;
+    if (continuations.isNotEmpty) {
+      final type = _getShiftType(continuations[0].typeId);
+      if (type != null) {
+        continuationDot = Positioned(
+          bottom: 2, right: 2,
+          child: Container(
+            width: 8, height: 8,
+            decoration: BoxDecoration(color: type.color, shape: BoxShape.circle),
+          ),
+        );
+      }
+    }
 
     return Opacity(
       opacity: isOutside ? 0.3 : (isClosed ? 0.6 : 1.0),
       child: Container(
         margin: const EdgeInsets.all(4),
         decoration: BoxDecoration(
-          color: shiftType != null ? shiftType.color : null,
           shape: BoxShape.circle,
           border: isSelected ? Border.all(color: _textColor, width: 2) : (isToday ? Border.all(color: _textColor, width: 1) : null),
         ),
-        child: Center(
-          child: Text('${day.day}', style: TextStyle(
-            color: shiftType != null ? Colors.black : (isRed ? _redColor : _textColor),
-            fontWeight: isRed || shiftType != null || isToday || isSelected ? FontWeight.bold : FontWeight.normal,
-          )),
+        child: Stack(
+          children: [
+            if (background != null) Positioned.fill(child: background),
+            if (continuationDot != null) continuationDot,
+            Center(
+              child: Text('${day.day}', style: TextStyle(
+                color: ownShifts.isNotEmpty ? Colors.black : (isRed ? _redColor : _textColor),
+                fontWeight: isRed || ownShifts.isNotEmpty || isToday || isSelected ? FontWeight.bold : FontWeight.normal,
+              )),
+            ),
+          ],
         ),
       ),
     );
@@ -571,9 +695,9 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
     final key = _dateKey(_selectedDay!);
-    final shift = _shifts[key];
-    if (shift == null) return _buildShiftPicker();
-    return _buildShiftCard(key, shift);
+    final shifts = _shifts[key] ?? [];
+    if (shifts.isEmpty) return _buildShiftPicker();
+    return _buildShiftCardList(key, shifts);
   }
 
   Widget _buildShiftPicker() {
@@ -597,10 +721,22 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildShiftCircle(ShiftType type) {
     return GestureDetector(
       onTap: () async {
-        final start = DateTime(_selectedDay!.year, _selectedDay!.month, _selectedDay!.day, type.startHour, type.startMinute);
-        final end = start.add(Duration(minutes: (type.plannedHours * 60).round()));
+        final key = _dateKey(_selectedDay!);
+        final existing = _shifts[key] ?? [];
+        if (existing.length >= 2) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Максимум 2 смены в день')),
+          );
+          return;
+        }
+        final entries = _createShiftEntries(type, _selectedDay!);
         setState(() {
-          _shifts[_dateKey(_selectedDay!)] = ShiftEntry(typeId: type.id, startTime: start, endTime: end);
+          _shifts[key] = [...existing, entries[0]];
+          if (entries.length == 2) {
+            final nextKey = _dateKey(_selectedDay!.add(const Duration(days: 1)));
+            final nextExisting = _shifts[nextKey] ?? [];
+            _shifts[nextKey] = [...nextExisting, entries[1]];
+          }
         });
         await _saveShifts();
       },
@@ -638,12 +774,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildShiftCard(String key, ShiftEntry shift) {
-    final type = _getShiftType(shift.typeId);
-    final amount = _calculateAmount(shift, type);
-    final startStr = '${shift.startTime.hour.toString().padLeft(2, '0')}:${shift.startTime.minute.toString().padLeft(2, '0')}';
-    final endStr = '${shift.endTime.hour.toString().padLeft(2, '0')}:${shift.endTime.minute.toString().padLeft(2, '0')}';
-
+  Widget _buildShiftCardList(String key, List<ShiftEntry> shifts) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(color: _bgColor, borderRadius: const BorderRadius.vertical(top: Radius.circular(16))),
@@ -651,23 +782,106 @@ class _HomeScreenState extends State<HomeScreen> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              if (type != null)
+          Text(
+            '${_selectedDay!.day}.${_selectedDay!.month.toString().padLeft(2, '0')}.${_selectedDay!.year}',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: _textColor),
+          ),
+          const SizedBox(height: 8),
+          ...shifts.asMap().entries.map((e) => _buildShiftRow(key, e.key, e.value)),
+          if (shifts.length < 2)
+            TextButton.icon(
+              onPressed: () {
+                _showAddShiftDialog(key);
+              },
+              icon: const Icon(Icons.add, color: Colors.blue),
+              label: const Text('Добавить ещё смену', style: TextStyle(color: Colors.blue)),
+            ),
+        ],
+      ),
+    );
+  }
+
+  void _showAddShiftDialog(String key) {
+    showDialog(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('Добавить смену'),
+        children: _shiftTypes.map((type) {
+          return SimpleDialogOption(
+            onPressed: () async {
+              Navigator.pop(context);
+              final existing = _shifts[key] ?? [];
+              if (existing.length >= 2) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Максимум 2 смены в день')),
+                );
+                return;
+              }
+              final entries = _createShiftEntries(type, _selectedDay!);
+              setState(() {
+                _shifts[key] = [...existing, entries[0]];
+                if (entries.length == 2) {
+                  final nextKey = _dateKey(_selectedDay!.add(const Duration(days: 1)));
+                  final nextExisting = _shifts[nextKey] ?? [];
+                  _shifts[nextKey] = [...nextExisting, entries[1]];
+                }
+              });
+              await _saveShifts();
+            },
+            child: Row(
+              children: [
                 Container(
                   width: 32, height: 32,
                   decoration: BoxDecoration(color: type.color, shape: BoxShape.circle),
                   child: Center(child: Text(type.letter, style: const TextStyle(fontWeight: FontWeight.bold))),
                 ),
-              const SizedBox(width: 12),
+                const SizedBox(width: 12),
+                Text(type.name),
+              ],
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  Widget _buildShiftRow(String key, int index, ShiftEntry shift) {
+    final type = _getShiftType(shift.typeId);
+    final amount = shift.groupId != null ? _calculateAmountForGroup(shift) : _calculateAmount(shift, type);
+    final isSalaryRecord = shift.groupId == null || (_salaryFromStart ? !shift.isContinuation : shift.isContinuation);
+    final startStr = '${shift.startTime.hour.toString().padLeft(2, '0')}:${shift.startTime.minute.toString().padLeft(2, '0')}';
+    final endStr = '${shift.endTime.hour.toString().padLeft(2, '0')}:${shift.endTime.minute.toString().padLeft(2, '0')}';
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: _isDark ? const Color(0xFF2C2C2C) : Colors.white,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              if (type != null)
+                Container(
+                  width: 24, height: 24,
+                  decoration: BoxDecoration(color: type.color, shape: BoxShape.circle),
+                  child: Center(child: Text(type.letter, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold))),
+                ),
+              const SizedBox(width: 8),
               Expanded(child: Text(
-                '${_selectedDay!.day}.${_selectedDay!.month.toString().padLeft(2, '0')}.${_selectedDay!.year}',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: _textColor),
+                '${type?.name ?? '?'}${shift.isContinuation ? ' (продолжение)' : ''}',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: _textColor),
               )),
-              IconButton(icon: Icon(Icons.more_vert, color: _textColor), onPressed: () => _showShiftMenu(key, shift)),
+              IconButton(
+                icon: Icon(Icons.more_vert, color: _textColor, size: 20),
+                onPressed: () => _showShiftMenu(key, index, shift),
+              ),
             ],
           ),
-          const SizedBox(height: 8),
           Row(
             children: [
               Expanded(
@@ -683,70 +897,35 @@ class _HomeScreenState extends State<HomeScreen> {
                       await _saveShifts();
                     }
                   },
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Начало', style: TextStyle(fontSize: 12, color: _subtextColor)),
-                      Text(startStr, style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: _textColor)),
-                    ],
-                  ),
+                  child: Text('$startStr – $endStr', style: TextStyle(fontSize: 16, color: _textColor)),
                 ),
               ),
-              Expanded(
-                child: GestureDetector(
-                  onTap: () async {
-                    final picked = await _pickTime(shift.endTime);
-                    if (picked != null) {
-                      setState(() {
-                        var newEnd = picked;
-                        if (!newEnd.isAfter(shift.startTime)) {
-                          newEnd = newEnd.add(const Duration(days: 1));
-                        }
-                        shift.endTime = newEnd;
-                      });
-                      await _saveShifts();
-                    }
-                  },
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Конец', style: TextStyle(fontSize: 12, color: _subtextColor)),
-                      Text(endStr, style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: _textColor)),
-                    ],
-                  ),
-                ),
-              ),
+              Text('${shift.actualHours.toStringAsFixed(1)} ч', style: TextStyle(fontSize: 14, color: _subtextColor)),
             ],
           ),
-          const SizedBox(height: 12),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Фактические часы', style: TextStyle(fontSize: 12, color: _subtextColor)),
-              Text('${shift.actualHours.toStringAsFixed(1)} ч', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: _textColor)),
-            ],
+          const SizedBox(height: 4),
+          Text(
+            isSalaryRecord ? 'Сумма: ${amount.toStringAsFixed(2)} ₽' : 'Сумма: (на ${_salaryFromStart ? "день начала" : "день конца"})',
+            style: TextStyle(
+              fontSize: 14, fontWeight: FontWeight.bold,
+              color: _isDark ? const Color(0xFF64B5F6) : Colors.blue,
+            ),
           ),
-          const SizedBox(height: 12),
-          Text('Сумма: ${amount.toStringAsFixed(2)} ₽', style: TextStyle(
-            fontSize: 18, fontWeight: FontWeight.bold,
-            color: _isDark ? const Color(0xFF64B5F6) : Colors.blue,
-          )),
         ],
       ),
     );
   }
 
   Future<DateTime?> _pickTime(DateTime initial) async {
-    final now = DateTime.now();
     final picked = await showTimePicker(
       context: context,
-      initialTime: TimeOfDay.fromDateTime(now),
+      initialTime: TimeOfDay.fromDateTime(initial),
     );
     if (picked == null) return null;
     return DateTime(initial.year, initial.month, initial.day, picked.hour, picked.minute);
   }
 
-  void _showShiftMenu(String key, ShiftEntry shift) {
+  void _showShiftMenu(String key, int index, ShiftEntry shift) {
     showModalBottomSheet(
       context: context,
       backgroundColor: _bgColor,
@@ -757,13 +936,28 @@ class _HomeScreenState extends State<HomeScreen> {
             ListTile(
               leading: Icon(Icons.tune, color: _textColor),
               title: Text('Настройки смены', style: TextStyle(color: _textColor)),
-              onTap: () { Navigator.pop(context); _showShiftSettings(key, shift); },
+              onTap: () { Navigator.pop(context); _showShiftSettings(key, index, shift); },
             ),
             ListTile(
               leading: Icon(Icons.delete, color: _redColor),
               title: Text('Удалить смену', style: TextStyle(color: _redColor)),
               onTap: () async {
-                setState(() => _shifts.remove(key));
+                setState(() {
+                  final groupId = shift.groupId;
+                  if (groupId != null) {
+                    // Удаляем все записи с этим groupId (во всех днях)
+                    for (final k in _shifts.keys.toList()) {
+                      _shifts[k]?.removeWhere((s) => s.groupId == groupId);
+                      if (_shifts[k]?.isEmpty == true) _shifts.remove(k);
+                    }
+                  } else {
+                    final list = _shifts[key];
+                    if (list != null) {
+                      list.removeAt(index);
+                      if (list.isEmpty) _shifts.remove(key);
+                    }
+                  }
+                });
                 await _saveShifts();
                 Navigator.pop(context);
               },
@@ -774,7 +968,7 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _showShiftSettings(String key, ShiftEntry shift) {
+  void _showShiftSettings(String key, int index, ShiftEntry shift) {
     final type = _getShiftType(shift.typeId);
     if (type == null) return;
 
@@ -830,6 +1024,33 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
+  }
+  double _calculateAmountForGroup(ShiftEntry shift) {
+    final type = _getShiftType(shift.typeId);
+    if (type == null || !type.countInSalary) return 0;
+
+    // Собираем все записи группы
+    double totalGroupHours = 0;
+    for (final e in _shifts.entries) {
+      for (final s in e.value) {
+        if (s.groupId == shift.groupId) {
+          totalGroupHours += s.actualHours;
+        }
+      }
+    }
+
+    final rateValue = shift.overrideRateValue ?? type.rateValue;
+    final rateType = shift.overrideRateType ?? type.rateType;
+    final coefOver = shift.overrideCoefOvertime ?? type.coefOvertime;
+    final coefUnder = shift.overrideCoefUndertime ?? type.coefUndertime;
+
+    if (rateType == RateType.perHour) return totalGroupHours * rateValue;
+    if (type.plannedHours <= 0) return rateValue;
+    final hourCost = rateValue / type.plannedHours;
+    final diff = totalGroupHours - type.plannedHours;
+    if (diff > 0) return rateValue + diff * hourCost * coefOver;
+    if (diff < 0) return rateValue - (-diff) * hourCost * coefUnder;
+    return rateValue;
   }
 
   double _calculateAmount(ShiftEntry shift, ShiftType? type) {
@@ -989,16 +1210,18 @@ class SettingsScreen extends StatefulWidget {
   final ThemeMode themeMode;
   final double globalCoefOvertime;
   final double globalCoefUndertime;
+  final bool salaryFromStart;
   final ValueChanged<ThemeMode> onThemeChanged;
   final ValueChanged<List<ShiftType>> onShiftTypesChanged;
   final ValueChanged<List<ShiftTemplate>> onTemplatesChanged;
-  final Function(double, double) onGlobalSettingsChanged;
+  final Function(double, double, bool) onGlobalSettingsChanged;
   final Future<void> Function(ShiftTemplate, DateTime, String, int) onGenerateTemplate;
 
   const SettingsScreen({
     super.key,
     required this.shiftTypes, required this.templates, required this.themeMode,
     required this.globalCoefOvertime, required this.globalCoefUndertime,
+    required this.salaryFromStart,
     required this.onThemeChanged, required this.onShiftTypesChanged, required this.onTemplatesChanged,
     required this.onGlobalSettingsChanged, required this.onGenerateTemplate,
   });
@@ -1012,6 +1235,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late List<ShiftTemplate> _templates;
   late double _coefOver;
   late double _coefUnder;
+  late bool _salaryFromStart;
 
   @override
   void initState() {
@@ -1020,6 +1244,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _templates = List.from(widget.templates);
     _coefOver = widget.globalCoefOvertime;
     _coefUnder = widget.globalCoefUndertime;
+    _salaryFromStart = widget.salaryFromStart;
   }
 
   @override
@@ -1049,8 +1274,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 24),
           const Text('Коэффициенты (глобальные)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
-          _buildNumberField('Переработка', _coefOver, (v) { setState(() => _coefOver = v); widget.onGlobalSettingsChanged(_coefOver, _coefUnder); }),
-          _buildNumberField('Недоработка', _coefUnder, (v) { setState(() => _coefUnder = v); widget.onGlobalSettingsChanged(_coefOver, _coefUnder); }),
+          _buildNumberField('Переработка', _coefOver, (v) { setState(() => _coefOver = v); widget.onGlobalSettingsChanged(_coefOver, _coefUnder, _salaryFromStart); }),
+          _buildNumberField('Недоработка', _coefUnder, (v) { setState(() => _coefUnder = v); widget.onGlobalSettingsChanged(_coefOver, _coefUnder, _salaryFromStart); }),
+          const SizedBox(height: 24),
+          const Text('Зарплата', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          Card(
+            child: SwitchListTile(
+              title: const Text('Считать от начала смены'),
+              subtitle: const Text('Если выключено — от конца смены'),
+              value: _salaryFromStart,
+              onChanged: (v) {
+                setState(() => _salaryFromStart = v);
+                widget.onGlobalSettingsChanged(_coefOver, _coefUnder, _salaryFromStart);
+              },
+            ),
+          ),
         ],
       ),
     );
