@@ -1498,12 +1498,17 @@ Widget _buildNoteRow(String key, Note note) {
           children: [
             ListTile(
               leading: Icon(Icons.tune, color: _textColor),
-              title: Text('Настройки смены', style: TextStyle(color: _textColor)),
+              title: Text('Настройки', style: TextStyle(color: _textColor)),
               onTap: () { Navigator.pop(context); _showShiftSettings(key, index, shift); },
             ),
             ListTile(
+              leading: Icon(Icons.edit_calendar, color: _textColor),
+              title: Text('Перенести', style: TextStyle(color: _textColor)),
+              onTap: () { Navigator.pop(context); _moveShiftToDate(shift); },
+            ),
+            ListTile(
               leading: Icon(Icons.delete, color: _redColor),
-              title: Text('Удалить смену', style: TextStyle(color: _redColor)),
+              title: Text('Удалить', style: TextStyle(color: _redColor)),
               onTap: () async {
                 setState(() {
                   _shifts.removeWhere((s) => s.id == shift.id);
@@ -1517,7 +1522,42 @@ Widget _buildNoteRow(String key, Note note) {
       ),
     );
   }
-
+  Future<void> _moveShiftToDate(ShiftEntry shift) async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: shift.startTime,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2030),
+      helpText: 'Новая дата начала',
+    );
+    if (picked == null) return;
+    final oldStart = shift.startTime;
+    final oldEnd = shift.endTime;
+    final diffDays = DateTime(picked.year, picked.month, picked.day)
+        .difference(DateTime(oldStart.year, oldStart.month, oldStart.day))
+        .inDays;
+    if (diffDays == 0) return;
+    shift.startTime = oldStart.add(Duration(days: diffDays));
+    shift.endTime = oldEnd.add(Duration(days: diffDays));
+    final conflicts = _findAllConflicts(shift);
+    if (conflicts.isNotEmpty) {
+      if (!mounted) return;
+      final action = await _showConflictDialog(conflicts, shift);
+      if (action == 'cancel') {
+        shift.startTime = oldStart;
+        shift.endTime = oldEnd;
+        setState(() {});
+        return;
+      }
+      setState(() {
+        for (final c in conflicts) {
+          _shifts.removeWhere((s) => s.id == c.id);
+        }
+      });
+    }
+    setState(() {});
+    await _saveShifts();
+  }
   void _showShiftSettings(String key, int index, ShiftEntry shift) {
     final type = _getShiftType(shift.typeId);
     if (type == null) return;
