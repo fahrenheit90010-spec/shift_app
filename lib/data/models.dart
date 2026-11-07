@@ -10,6 +10,7 @@ class Features {
   static const bool multipleTemplates = true;
   static const bool customTemplates = true;
   static const bool categories = true;
+  static const bool photos = true; // Pro: фото в заметках
 }
 
 class ShiftType {
@@ -153,46 +154,6 @@ class TemplateStep {
   bool get isRest => typeId == null;
 }
 
-class Note {
-  final String id;
-  final String date;
-  final String title;
-  final String text;
-  final bool hasCheckboxes;
-  final List<int> checkedLines;
-  final String? photoPath;
-  final DateTime createdAt;
-
-  Note({
-    required this.id,
-    required this.date,
-    this.title = '',
-    required this.text,
-    this.hasCheckboxes = false,
-    this.checkedLines = const [],
-    this.photoPath,
-    required this.createdAt,
-  });
-
-  Map<String, dynamic> toJson() => {
-    'id': id, 'date': date, 'title': title, 'text': text,
-    'hasCheckboxes': hasCheckboxes, 'checkedLines': checkedLines,
-    'photoPath': photoPath,
-    'createdAt': createdAt.toIso8601String(),
-  };
-
-  factory Note.fromJson(Map<String, dynamic> json) => Note(
-    id: json['id'],
-    date: json['date'],
-    title: json['title'] ?? '',
-    text: json['text'],
-    hasCheckboxes: json['hasCheckboxes'] ?? false,
-    checkedLines: List<int>.from(json['checkedLines'] ?? []),
-    photoPath: json['photoPath'],
-    createdAt: DateTime.parse(json['createdAt']),
-  );
-}
-
 class ShiftTemplate {
   final String id;
   final String name;
@@ -225,5 +186,73 @@ class ShiftTemplate {
     description: json['description'] ?? '',
     priority: json['priority'] ?? 1,
     isCustom: json['isCustom'] ?? false,
+  );
+}
+
+// Заметка (без чекбоксов, с фото)
+class Note {
+  final String id;
+  final String date;
+  final String title;
+  final String text;
+  final String? photoPath;
+  final String? photoComment;
+  final DateTime createdAt;
+
+  Note({
+    required this.id,
+    required this.date,
+    this.title = '',
+    required this.text,
+    this.photoPath,
+    this.photoComment,
+    required this.createdAt,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'id': id, 'date': date, 'title': title, 'text': text,
+    'photoPath': photoPath, 'photoComment': photoComment,
+    'createdAt': createdAt.toIso8601String(),
+  };
+
+  factory Note.fromJson(Map<String, dynamic> json) => Note(
+    id: json['id'],
+    date: json['date'],
+    title: json['title'] ?? '',
+    text: json['text'],
+    photoPath: json['photoPath'],
+    photoComment: json['photoComment'],
+    createdAt: DateTime.parse(json['createdAt']),
+  );
+}
+
+// Задача (одна строка, чекбокс)
+class Task {
+  final String id;
+  final String date;
+  final String text;
+  final bool isDone;
+  final DateTime createdAt;
+
+  Task({
+    required this.id,
+    required this.date,
+    required this.text,
+    this.isDone = false,
+    required this.createdAt,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'id': id, 'date': date, 'text': text,
+    'isDone': isDone,
+    'createdAt': createdAt.toIso8601String(),
+  };
+
+  factory Task.fromJson(Map<String, dynamic> json) => Task(
+    id: json['id'],
+    date: json['date'],
+    text: json['text'],
+    isDone: json['isDone'] ?? false,
+    createdAt: DateTime.parse(json['createdAt']),
   );
 }
