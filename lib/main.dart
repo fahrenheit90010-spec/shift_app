@@ -106,6 +106,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final Map<String, List<ShiftEntry>> _shifts = {};
   List<Holiday> _holidays = [];
   Map<String, MonthRecord> _closedMonths = {};
+  Map<String, List<Note>> _notes = {};
 
   double _globalCoefOvertime = 1.0;
   double _globalCoefUndertime = 1.0;
@@ -145,6 +146,14 @@ class _HomeScreenState extends State<HomeScreen> {
     _globalCoefOvertime = double.tryParse(prefs.getString('coef_overtime') ?? '1.0') ?? 1.0;
     _globalCoefUndertime = double.tryParse(prefs.getString('coef_undertime') ?? '1.0') ?? 1.0;
     _salaryFromStart = prefs.getString('salary_from_start') != 'false';
+    final savedNotes = prefs.getStringList('notes') ?? [];
+    final notesMap = <String, List<Note>>{};
+    for (final s in savedNotes) {
+      try {
+        final n = Note.fromJson(jsonDecode(s) as Map<String, dynamic>);
+        notesMap.putIfAbsent(n.date, () => []).add(n);
+      } catch (_) {}
+    }
 
     final savedShifts = prefs.getStringList('shifts') ?? [];
     final map = <String, List<ShiftEntry>>{};
@@ -173,6 +182,7 @@ class _HomeScreenState extends State<HomeScreen> {
       _templates = [...ShiftTemplate.predefined(), ...customTemplates];
       _shifts.addAll(map);
       _closedMonths = closed;
+      _notes = notesMap;
     });
 
     _autoClosePastMonths();
@@ -218,6 +228,16 @@ class _HomeScreenState extends State<HomeScreen> {
     await prefs.setString('coef_overtime', _globalCoefOvertime.toString());
     await prefs.setString('coef_undertime', _globalCoefUndertime.toString());
     await prefs.setString('salary_from_start', _salaryFromStart.toString());
+  }
+  Future<void> _saveNotes() async {
+    final prefs = await SharedPreferences.getInstance();
+    final list = <String>[];
+    for (final e in _notes.entries) {
+      for (final n in e.value) {
+        list.add(jsonEncode(n.toJson()));
+      }
+    }
+    await prefs.setStringList('notes', list);
   }
 
   Future<void> _saveClosedMonths() async {
@@ -414,7 +434,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     if (crossesMidnight) {
       final midnight = DateTime(start.year, start.month, start.day + 1);
-      final groupId = 'group_${DateTime.now().millisecondsSinceEpoch}';
+      final groupId = 'group_${DateTime.now().microsecondsSinceEpoch}_${DateTime.now().hashCode}';
       return [
         ShiftEntry(typeId: type.id, startTime: start, endTime: midnight, groupId: groupId, isContinuation: false),
         ShiftEntry(typeId: type.id, startTime: midnight, endTime: end, groupId: groupId, isContinuation: true),
@@ -599,9 +619,7 @@ class _HomeScreenState extends State<HomeScreen> {
       if (_shifts.containsKey(key)) { overwritten++; continue; }
 
       final entries = _createShiftEntries(type, date);
-      newShifts[key] = entries;
-
-      // Если это сутки — вторая запись идёт на следующий день
+      newShifts[key] = [entries[0]];
       if (entries.length == 2) {
         final nextKey = _dateKey(date.add(const Duration(days: 1)));
         newShifts[nextKey] = [entries[1]];
@@ -634,7 +652,7 @@ class _HomeScreenState extends State<HomeScreen> {
         if (type == null) continue;
         final key = _dateKey(date);
         final entries = _createShiftEntries(type, date);
-        newShifts[key] = entries;
+        newShifts[key] = [entries[0]];
         if (entries.length == 2) {
           final nextKey = _dateKey(date.add(const Duration(days: 1)));
           newShifts[nextKey] = [entries[1]];
@@ -877,7 +895,189 @@ class _HomeScreenState extends State<HomeScreen> {
               icon: const Icon(Icons.add, color: Colors.blue),
               label: const Text('Добавить ещё смену', style: TextStyle(color: Colors.blue)),
             ),
+          const Divider(height: 24),
+          _buildNotesSection(key),
         ],
+      ),
+    );
+  }
+  Widget _buildNotesSection(String key) {
+    final notes = _notes[key] ?? [];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Заметки', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: _textColor)),
+        const SizedBox(height: 8),
+        ...notes.map((n) => _buildNoteRow(key, n)),
+        TextButton.icon(
+          onPressed: () => _showNoteDialog(key, null),
+          icon: const Icon(Icons.add, color: Colors.blue, size: 20),
+          label: const Text('Добавить заметку', style: TextStyle(color: Colors.blue)),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildNoteRow(String key, Note note) {
+    final lines = note.text.split('\n');
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: _isDark ? const Color(0xFF2C2C2C) : Colors.white,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: GestureDetector(
+        onLongPress: () => _deleteNoteDialog(key, note),
+        onTap: () => _showNoteDialog(key, note),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: lines.asMap().entries.map((e) {
+            final idx = e.key;
+            final line = e.value;
+            if (note.hasCheckboxes) {
+              final isChecked = note.checkedLines.contains(idx);
+              return Row(
+                children: [
+                  GestureDetector(
+                    onTap: () => _toggleCheckbox(key, note, idx),
+                    child: Icon(
+                      isChecked ? Icons.check_box : Icons.check_box_outline_blank,
+                      color: isChecked ? Colors.blue : _subtextColor,
+                      size: 20,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      line,
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: isChecked ? _subtextColor : _textColor,
+                        decoration: isChecked ? TextDecoration.lineThrough : null,
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            }
+            return Text(line, style: TextStyle(fontSize: 14, color: _textColor));
+          }).toList(),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _toggleCheckbox(String key, Note note, int lineIndex) async {
+    setState(() {
+      final list = _notes[key];
+      if (list == null) return;
+      final i = list.indexWhere((n) => n.id == note.id);
+      if (i < 0) return;
+      final checked = List<int>.from(note.checkedLines);
+      if (checked.contains(lineIndex)) {
+        checked.remove(lineIndex);
+      } else {
+        checked.add(lineIndex);
+      }
+      list[i] = Note(
+        id: note.id, date: note.date, text: note.text,
+        hasCheckboxes: note.hasCheckboxes, checkedLines: checked,
+        createdAt: note.createdAt,
+      );
+    });
+    await _saveNotes();
+  }
+
+  void _deleteNoteDialog(String key, Note note) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Удалить заметку?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
+          TextButton(
+            onPressed: () async {
+              setState(() {
+                _notes[key]?.removeWhere((n) => n.id == note.id);
+                if (_notes[key]?.isEmpty == true) _notes.remove(key);
+              });
+              await _saveNotes();
+              Navigator.pop(context);
+            },
+            child: const Text('Удалить', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showNoteDialog(String key, Note? existing) {
+    final textController = TextEditingController(text: existing?.text ?? '');
+    bool hasCheckboxes = existing?.hasCheckboxes ?? false;
+    List<int> checkedLines = existing?.checkedLines ?? [];
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: Text(existing == null ? 'Новая заметка' : 'Редактировать заметку'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: textController,
+                  maxLines: 5,
+                  decoration: const InputDecoration(labelText: 'Текст (каждый абзац — с новой строки)'),
+                ),
+                const SizedBox(height: 8),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('☐ Чекбоксы'),
+                  subtitle: const Text('Каждый абзац — с галочкой'),
+                  value: hasCheckboxes,
+                  onChanged: (v) => setDialogState(() => hasCheckboxes = v),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
+            TextButton(
+              onPressed: () async {
+                final text = textController.text.trim();
+                if (text.isEmpty) return;
+                setState(() {
+                  final list = _notes[key] ?? [];
+                  if (existing == null) {
+                    list.add(Note(
+                      id: 'note_${DateTime.now().millisecondsSinceEpoch}',
+                      date: key, text: text,
+                      hasCheckboxes: hasCheckboxes,
+                      checkedLines: checkedLines,
+                      createdAt: DateTime.now(),
+                    ));
+                  } else {
+                    final i = list.indexWhere((n) => n.id == existing.id);
+                    if (i >= 0) {
+                      list[i] = Note(
+                        id: existing.id, date: existing.date, text: text,
+                        hasCheckboxes: hasCheckboxes,
+                        checkedLines: checkedLines,
+                        createdAt: existing.createdAt,
+                      );
+                    }
+                  }
+                  _notes[key] = list;
+                });
+                await _saveNotes();
+                Navigator.pop(context);
+              },
+              child: const Text('Сохранить'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -948,22 +1148,45 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           Row(
             children: [
-              Expanded(
-                child: GestureDetector(
-                  onTap: () async {
-                    final picked = await _pickTime(shift.startTime);
-                    if (picked != null) {
-                      setState(() {
-                        final diff = shift.endTime.difference(shift.startTime);
-                        shift.startTime = picked;
-                        shift.endTime = picked.add(diff);
-                      });
-                      await _saveShifts();
-                    }
-                  },
-                  child: Text('$startStr – $endStr', style: TextStyle(fontSize: 16, color: _textColor)),
+              GestureDetector(
+                onTap: () async {
+                  final picked = await _pickTime(shift.startTime);
+                  if (picked != null) {
+                    setState(() {
+                      shift.startTime = picked;
+                      if (!shift.endTime.isAfter(shift.startTime)) {
+                        shift.endTime = shift.startTime.add(const Duration(hours: 1));
+                      }
+                    });
+                    await _saveShifts();
+                  }
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  child: Text(startStr, style: TextStyle(fontSize: 16, color: _textColor)),
                 ),
               ),
+              const Text(' – ', style: TextStyle(fontSize: 16)),
+              GestureDetector(
+                onTap: () async {
+                  final picked = await _pickTime(shift.endTime);
+                  if (picked != null) {
+                    setState(() {
+                      var newEnd = picked;
+                      if (!newEnd.isAfter(shift.startTime)) {
+                        newEnd = newEnd.add(const Duration(days: 1));
+                      }
+                      shift.endTime = newEnd;
+                    });
+                    await _saveShifts();
+                  }
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  child: Text(endStr, style: TextStyle(fontSize: 16, color: _textColor)),
+                ),
+              ),
+              const SizedBox(width: 12),
               Text('${shift.actualHours.toStringAsFixed(1)} ч', style: TextStyle(fontSize: 14, color: _subtextColor)),
             ],
           ),
@@ -1406,6 +1629,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           children: [
             IconButton(icon: const Icon(Icons.play_arrow), onPressed: () => _showGenerateDialog(template)),
             if (template.isCustom)
+              IconButton(icon: const Icon(Icons.edit), onPressed: () => _editCustomTemplate(template)),
+            if (template.isCustom)
               IconButton(icon: const Icon(Icons.delete, color: Colors.red), onPressed: () => _deleteTemplate(template)),
           ],
         ),
@@ -1448,6 +1673,127 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   void _addShiftType() => _showShiftTypeDialog(null);
   void _editShiftType(ShiftType type) => _showShiftTypeDialog(type);
+  void _editCustomTemplate(ShiftTemplate template) {
+    final nameController = TextEditingController(text: template.name);
+    final steps = List<String>.from(template.cycle);
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Редактировать шаблон'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Название')),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8, runSpacing: 8,
+                  children: [
+                    ...steps.asMap().entries.map((e) {
+                      final step = e.value;
+                      final isRest = step == 'rest';
+                      final type = isRest ? null : _shiftTypes.firstWhere(
+                        (t) => t.id == step,
+                        orElse: () => _shiftTypes.first,
+                      );
+                      return GestureDetector(
+                        onLongPress: () => setDialogState(() => steps.removeAt(e.key)),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              width: 48, height: 48,
+                              decoration: BoxDecoration(
+                                color: isRest ? Colors.grey.shade400 : (type?.color ?? Colors.grey),
+                                shape: BoxShape.circle,
+                              ),
+                              child: Center(
+                                child: Text(
+                                  isRest ? '—' : (type?.letter ?? '?'),
+                                  style: const TextStyle(color: Colors.black, fontSize: 18, fontWeight: FontWeight.bold),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              isRest ? 'Отдых' : (type?.name ?? '?'),
+                              style: const TextStyle(fontSize: 10),
+                            ),
+                          ],
+                        ),
+                      );
+                    }),
+                    GestureDetector(
+                      onTap: () async {
+                        final picked = await showDialog<String>(
+                          context: context,
+                          builder: (context) => SimpleDialog(
+                            title: const Text('Выбери шаг'),
+                            children: [
+                              SimpleDialogOption(
+                                onPressed: () => Navigator.pop(context, 'rest'),
+                                child: const Text('Отдых'),
+                              ),
+                              ..._shiftTypes.map((t) => SimpleDialogOption(
+                                onPressed: () => Navigator.pop(context, t.id),
+                                child: Text(t.name),
+                              )),
+                            ],
+                          ),
+                        );
+                        if (picked != null) setDialogState(() => steps.add(picked));
+                      },
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 48, height: 48,
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade300,
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(Icons.add, color: Colors.black54),
+                          ),
+                          const SizedBox(height: 4),
+                          const Text('Шаг', style: TextStyle(fontSize: 10)),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
+            TextButton(
+              onPressed: () {
+                final name = nameController.text.trim();
+                if (name.isEmpty || steps.isEmpty) return;
+                final updated = ShiftTemplate(
+                  id: template.id,
+                  name: name,
+                  cycle: steps,
+                  description: template.description,
+                  priority: template.priority,
+                  isCustom: true,
+                );
+                setState(() {
+                  final i = _templates.indexWhere((t) => t.id == template.id);
+                  if (i >= 0) _templates[i] = updated;
+                });
+                widget.onTemplatesChanged(_templates);
+                Navigator.pop(context);
+              },
+              child: const Text('Сохранить'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   void _createCustomTemplate() {
     final nameController = TextEditingController();

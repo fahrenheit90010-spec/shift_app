@@ -153,6 +153,46 @@ class TemplateStep {
   bool get isRest => typeId == null;
 }
 
+class Note {
+  final String id;
+  final String date;
+  final String title;
+  final String text;
+  final bool hasCheckboxes;
+  final List<int> checkedLines;
+  final String? photoPath;
+  final DateTime createdAt;
+
+  Note({
+    required this.id,
+    required this.date,
+    this.title = '',
+    required this.text,
+    this.hasCheckboxes = false,
+    this.checkedLines = const [],
+    this.photoPath,
+    required this.createdAt,
+  });
+
+  Map<String, dynamic> toJson() => {
+    'id': id, 'date': date, 'title': title, 'text': text,
+    'hasCheckboxes': hasCheckboxes, 'checkedLines': checkedLines,
+    'photoPath': photoPath,
+    'createdAt': createdAt.toIso8601String(),
+  };
+
+  factory Note.fromJson(Map<String, dynamic> json) => Note(
+    id: json['id'],
+    date: json['date'],
+    title: json['title'] ?? '',
+    text: json['text'],
+    hasCheckboxes: json['hasCheckboxes'] ?? false,
+    checkedLines: List<int>.from(json['checkedLines'] ?? []),
+    photoPath: json['photoPath'],
+    createdAt: DateTime.parse(json['createdAt']),
+  );
+}
+
 class ShiftTemplate {
   final String id;
   final String name;
