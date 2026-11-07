@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 import 'package:table_calendar/table_calendar.dart';
@@ -10,7 +10,25 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'dart:convert';
 import 'data/models.dart';
 import 'data/holiday_loader.dart';
+import 'package:image/image.dart' as img;
+import 'dart:typed_data';
+/// Сжимает изображение в отдельном изоляте (не блокирует UI).
+/// Возвращает JPEG-байты или null, если декодировать не удалось.
+/// Должна быть на верхнем уровне файла — compute() не видит методы классов.
+Future<Uint8List?> _compressImageInIsolate(Map<String, dynamic> params) async {
+  final file = File(params['path'] as String);
+  final bytes = await file.readAsBytes();
+  final decoded = img.decodeImage(bytes);
+  if (decoded == null) return null;
 
+  // Ресайз: длинная сторона до 1080 px (аналог minWidth/minHeight у flutter_image_compress)
+  final resized = (decoded.width >= decoded.height)
+      ? img.copyResize(decoded, width: 1080)
+      : img.copyResize(decoded, height: 1080);
+
+  final jpeg = img.encodeJpg(resized, quality: params['quality'] as int);
+  return Uint8List.fromList(jpeg);
+}
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initializeDateFormatting('ru_RU', null);
@@ -1038,24 +1056,39 @@ void _showNoteViewDialog(String key, Note note) {
     final titleController = TextEditingController(text: existing?.title ?? '');
     final textController = TextEditingController(text: existing?.text ?? '');
     String? photoPath = existing?.photoPath;
+        bool processingPhoto = false;
     
     showDialog(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) {
           Future<void> pickPhoto() async {
-            final picker = ImagePicker();
-            final picked = await picker.pickImage(source: ImageSource.gallery);
-            if (picked == null) return;
-            final dir = await getApplicationDocumentsDirectory();
-            final targetPath = '${dir.path}/photo_${DateTime.now().millisecondsSinceEpoch}.jpg';
-            final compressed = await FlutterImageCompress.compressAndGetFile(
-              picked.path, targetPath, quality: 70, minWidth: 1080, minHeight: 1080,
-            );
-            if (compressed != null) {
-              setDialogState(() => photoPath = compressed.path);
+           final picker = ImagePicker();
+           final picked = await picker.pickImage(source: ImageSource.gallery);
+           if (picked == null) return;
+
+           final dir = await getApplicationDocumentsDirectory();
+           final targetPath = '${dir.path}/photo_${DateTime.now().millisecondsSinceEpoch}.jpg';
+
+           setDialogState(() => processingPhoto = true);
+           try {
+            final compressedBytes = await compute(_compressImageInIsolate, {
+             'path': picked.path,
+             'quality': 70,
+            });
+
+            if (compressedBytes != null) {
+              await File(targetPath).writeAsBytes(compressedBytes);
+              if (context.mounted) {
+                setDialogState(() => photoPath = targetPath);
+              }
+            }
+          } finally {
+            if (context.mounted) {
+              setDialogState(() => processingPhoto = false);
             }
           }
+        }
 
           return AlertDialog(
             title: Text(existing == null ? 'Новая заметка' : 'Редактировать заметку'),
@@ -1071,8 +1104,24 @@ void _showNoteViewDialog(String key, Note note) {
                     maxLines: 8,
                     maxLength: 2000,
                     decoration: const InputDecoration(labelText: 'Текст'),
+                    onChanged: (_) => setDialogState(() {}),
                   ),
-                  if (photoPath == null)
+                  if (processingPhoto)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Row(
+                        children: [
+                          const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                          const SizedBox(width: 8),
+                          Text('Обработка фото…', style: TextStyle(fontSize: 13, color: _subtextColor)),
+                        ],
+                      ),
+                    )
+                  else if (photoPath == null)
                     TextButton.icon(
                       onPressed: pickPhoto,
                       icon: const Icon(Icons.photo, size: 18),
@@ -1096,9 +1145,10 @@ void _showNoteViewDialog(String key, Note note) {
             actions: [
               TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
               TextButton(
-                onPressed: () async {
+                onPressed: (processingPhoto || (textController.text.trim().isEmpty && photoPath == null))
+                    ? null
+                    : () async {
                   final text = textController.text.trim();
-                  if (text.isEmpty) return;
                   setState(() {
                     final list = _notes[key] ?? [];
                     if (existing == null) {
