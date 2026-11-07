@@ -472,7 +472,7 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: const Text('Мой график'),
         actions: [
-          IconButton(icon: const Icon(Icons.notes), tooltip: 'Все заметки', onPressed: _openNotesPage),
+          IconButton(icon: const Icon(Icons.sticky_note_2_outlined), tooltip: 'Все заметки', onPressed: _openNotesPage),
           IconButton(icon: const Icon(Icons.bar_chart), onPressed: _openStats),
           IconButton(icon: const Icon(Icons.settings), onPressed: _openSettings),
         ],
@@ -592,20 +592,13 @@ class _HomeScreenState extends State<HomeScreen> {
   void _openNotesPage() {
     Navigator.push(context, MaterialPageRoute(
       builder: (_) => NotesPage(
-        notes: _notes,
+        getNotes: () => _notes,
         dateKeyOf: _dateKey,
-        onNotesChanged: (newNotes) async {
-          setState(() => _notes = newNotes);
-          await _saveNotes();
-        },
         onEditNote: (key, existing) async => await _showNoteDialog(key, existing),
         onViewNote: (key, note) async => await _showNoteViewDialog(key, note),
         onDeleteNote: (key, note) async => await _deleteNoteDialog(key, note),
       ),
-    )).then((_) {
-      // Когда вернулись с NotesPage — синхронизируем _notes на всякий случай
-      if (mounted) setState(() {});
-    });
+    ));
   }
   void _openSettings() {
     Navigator.push(context, MaterialPageRoute(
@@ -1656,8 +1649,7 @@ Widget _buildNoteRow(String key, Note note) {
   }
 }
 class NotesPage extends StatefulWidget {
-  final Map<String, List<Note>> notes;
-  final Future<void> Function(Map<String, List<Note>>) onNotesChanged;
+  final Map<String, List<Note>> Function() getNotes;
   final Future<void> Function(String dateKey, Note? existing) onEditNote;
   final Future<void> Function(String dateKey, Note note) onViewNote;
   final Future<void> Function(String dateKey, Note note) onDeleteNote;
@@ -1665,8 +1657,7 @@ class NotesPage extends StatefulWidget {
 
   const NotesPage({
     super.key,
-    required this.notes,
-    required this.onNotesChanged,
+    required this.getNotes,
     required this.onEditNote,
     required this.onViewNote,
     required this.onDeleteNote,
@@ -1678,38 +1669,37 @@ class NotesPage extends StatefulWidget {
 }
 
 class _NotesPageState extends State<NotesPage> {
-  late Map<String, List<Note>> _notes;
   String _query = '';
+  String? _rangeStart;
+  String? _rangeEnd;
   final TextEditingController _searchController = TextEditingController();
 
-  @override
-  void initState() {
-    super.initState();
-    _notes = Map<String, List<Note>>.from(widget.notes);
-  }
-
-  List<MapEntry<String, Note>> _flatSorted() {
-    final entries = <MapEntry<String, Note>>[];
-    _notes.forEach((dateKey, list) {
-      for (final n in list) {
-        entries.add(MapEntry(dateKey, n));
-      }
-    });
-    entries.sort((a, b) {
-      final cmp = b.key.compareTo(a.key); // дата по убыванию
-      if (cmp != 0) return cmp;
-      return b.value.createdAt.compareTo(a.value.createdAt);
-    });
-    return entries;
-  }
-
-  List<MapEntry<String, Note>> _filtered() {
+  List<String> _filteredDates() {
     final q = _query.trim().toLowerCase();
-    if (q.isEmpty) return _flatSorted();
-    return _flatSorted().where((e) {
-      final n = e.value;
-      return n.title.toLowerCase().contains(q) || n.text.toLowerCase().contains(q);
-    }).toList();
+    final dates = <String>[];
+    widget.getNotes().forEach((dateKey, list) {
+      if (_rangeStart != null && dateKey.compareTo(_rangeStart!) < 0) return;
+      if (_rangeEnd != null && dateKey.compareTo(_rangeEnd!) > 0) return;
+      if (q.isNotEmpty) {
+        final matches = list.any((n) =>
+            n.title.toLowerCase().contains(q) || n.text.toLowerCase().contains(q));
+        if (!matches) return;
+      }
+      dates.add(dateKey);
+    });
+    dates.sort((a, b) => b.compareTo(a));
+    return dates;
+  }
+
+  List<Note> _notesForDate(String dateKey) {
+    final q = _query.trim().toLowerCase();
+    final all = widget.getNotes()[dateKey] ?? [];
+    final filtered = q.isEmpty
+        ? all
+        : all.where((n) =>
+            n.title.toLowerCase().contains(q) || n.text.toLowerCase().contains(q)).toList();
+    filtered.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return filtered;
   }
 
   String _formatDate(String key) {
@@ -1744,6 +1734,31 @@ class _NotesPageState extends State<NotesPage> {
     if (mounted) setState(() {});
   }
 
+  Future<void> _pickDateRange() async {
+    final initialStart = _rangeStart != null ? _parseDateKey(_rangeStart!) : null;
+    final initialEnd = _rangeEnd != null ? _parseDateKey(_rangeEnd!) : null;
+    final range = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2030),
+      initialDateRange: (initialStart != null && initialEnd != null)
+          ? DateTimeRange(start: initialStart, end: initialEnd)
+          : null,
+      helpText: 'Выберите диапазон дат',
+      saveText: 'Применить',
+    );
+    if (range == null) return;
+    setState(() {
+      _rangeStart = widget.dateKeyOf(range.start);
+      _rangeEnd = widget.dateKeyOf(range.end);
+    });
+  }
+
+  DateTime _parseDateKey(String key) {
+    final parts = key.split('-');
+    return DateTime(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
+  }
+
   @override
   void dispose() {
     _searchController.dispose();
@@ -1755,12 +1770,29 @@ class _NotesPageState extends State<NotesPage> {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final textColor = isDark ? const Color(0xFFE0E0E0) : Colors.black;
     final subtextColor = isDark ? const Color(0xFF9E9E9E) : Colors.grey.shade700;
-    final items = _filtered();
+    final dates = _filteredDates();
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Все заметки'),
         actions: [
+          if (_rangeStart != null || _rangeEnd != null)
+            IconButton(
+              icon: const Icon(Icons.filter_alt_off, color: Colors.red),
+              tooltip: 'Сбросить фильтр дат',
+              onPressed: () => setState(() {
+                _rangeStart = null;
+                _rangeEnd = null;
+              }),
+            ),
+          IconButton(
+            icon: Icon(
+              Icons.date_range,
+              color: (_rangeStart != null || _rangeEnd != null) ? Colors.blue : null,
+            ),
+            tooltip: 'Фильтр по датам',
+            onPressed: _pickDateRange,
+          ),
           IconButton(
             icon: const Icon(Icons.add),
             tooltip: 'Добавить заметку на дату',
@@ -1795,12 +1827,14 @@ class _NotesPageState extends State<NotesPage> {
           ),
         ),
       ),
-      body: items.isEmpty
+      body: dates.isEmpty
           ? Center(
               child: Padding(
                 padding: const EdgeInsets.all(24),
                 child: Text(
-                  _query.isEmpty ? 'Заметок пока нет' : 'Ничего не найдено',
+                  (_query.isEmpty && _rangeStart == null && _rangeEnd == null)
+                      ? 'Заметок пока нет'
+                      : 'Ничего не найдено',
                   style: TextStyle(color: subtextColor, fontSize: 16),
                   textAlign: TextAlign.center,
                 ),
@@ -1808,52 +1842,69 @@ class _NotesPageState extends State<NotesPage> {
             )
           : ListView.builder(
               padding: const EdgeInsets.all(8),
-              itemCount: items.length,
+              itemCount: dates.length,
               itemBuilder: (context, index) {
-                final e = items[index];
-                final note = e.value;
-                return Card(
-                  margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
-                  child: ListTile(
-                    title: Text(
-                      note.title.isNotEmpty ? note.title : (note.text.isNotEmpty ? note.text.split('\n').first : '(без текста)'),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(color: textColor, fontWeight: FontWeight.bold),
+                final dateKey = dates[index];
+                final dayNotes = _notesForDate(dateKey);
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(8, 12, 8, 4),
+                      child: Text(
+                        _formatDate(dateKey),
+                        style: TextStyle(
+                          color: textColor,
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
                     ),
-                    subtitle: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(_formatDate(e.key), style: TextStyle(color: subtextColor, fontSize: 12)),
-                        if (note.text.isNotEmpty)
-                          Text(
-                            note.text,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(color: textColor, fontSize: 13),
-                          ),
-                        if (note.photoPaths.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: Row(
+                    ...dayNotes.map((note) => Card(
+                          margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
+                          child: ListTile(
+                            title: Text(
+                              note.title.isNotEmpty
+                                  ? note.title
+                                  : (note.text.isNotEmpty ? note.text.split('\n').first : '(без текста)'),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(color: textColor, fontWeight: FontWeight.bold),
+                            ),
+                            subtitle: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Icon(Icons.photo, size: 14, color: subtextColor),
-                                const SizedBox(width: 4),
-                                Text(
-                                  note.photoPaths.length == 1 ? 'Фото' : 'Фото (${note.photoPaths.length})',
-                                  style: TextStyle(color: subtextColor, fontSize: 12),
-                                ),
+                                if (note.text.isNotEmpty)
+                                  Text(
+                                    note.text,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(color: textColor, fontSize: 13),
+                                  ),
+                                if (note.photoPaths.isNotEmpty)
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 4),
+                                    child: Row(
+                                      children: [
+                                        Icon(Icons.photo, size: 14, color: subtextColor),
+                                        const SizedBox(width: 4),
+                                        Text(
+                                          note.photoPaths.length == 1 ? 'Фото' : 'Фото (${note.photoPaths.length})',
+                                          style: TextStyle(color: subtextColor, fontSize: 12),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
                               ],
                             ),
+                            trailing: IconButton(
+                              icon: const Icon(Icons.delete_outline, color: Colors.red),
+                              onPressed: () => _onDelete(dateKey, note),
+                            ),
+                            onTap: () => _onView(dateKey, note),
                           ),
-                      ],
-                    ),
-                    trailing: IconButton(
-                      icon: const Icon(Icons.delete_outline, color: Colors.red),
-                      onPressed: () => _onDelete(e.key, note),
-                    ),
-                    onTap: () => _onView(e.key, note),
-                  ),
+                        )),
+                  ],
                 );
               },
             ),
