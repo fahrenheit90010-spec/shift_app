@@ -1400,10 +1400,12 @@ Widget _buildNoteRow(String key, Note note) {
                   if (picked == null) return;
                   final oldStart = shift.startTime;
                   final oldEnd = shift.endTime;
+                  final oldDuration = shift.actualHours;
                   shift.startTime = picked;
                   if (!shift.endTime.isAfter(shift.startTime)) {
                     shift.endTime = shift.startTime.add(const Duration(hours: 1));
                   }
+                  await _maybeAskDateFix(shift, oldDuration, true);
                   final conflicts = _findAllConflicts(shift);
                   if (conflicts.isNotEmpty) {
                     if (!mounted) return;
@@ -1434,11 +1436,13 @@ Widget _buildNoteRow(String key, Note note) {
                   final picked = await _pickTime(shift.endTime);
                   if (picked == null) return;
                   final oldEnd = shift.endTime;
+                  final oldDuration = shift.actualHours;
                   var newEnd = picked;
                   if (!newEnd.isAfter(shift.startTime)) {
                     newEnd = newEnd.add(const Duration(days: 1));
                   }
                   shift.endTime = newEnd;
+                  await _maybeAskDateFix(shift, oldDuration, false);
                   final conflicts = _findAllConflicts(shift);
                   if (conflicts.isNotEmpty) {
                     if (!mounted) return;
@@ -1486,6 +1490,56 @@ Widget _buildNoteRow(String key, Note note) {
     );
     if (picked == null) return null;
     return DateTime(initial.year, initial.month, initial.day, picked.hour, picked.minute);
+  }
+
+  /// Если после изменения времени смена раздулась больше чем в 2 раза,
+  /// даты разные, и время «перевернулось» (start < end по времени суток) —
+  /// спросить, не ошибка ли это даты. Возвращает true, если пользователь
+  /// согласился поменять дату (и дата уже поменяна).
+  Future<void> _maybeAskDateFix(ShiftEntry shift, double oldDuration, bool isStart) async {
+    final newDuration = shift.actualHours;
+    if (newDuration <= oldDuration * 2) return;
+    if (shift.startTime.year == shift.endTime.year &&
+        shift.startTime.month == shift.endTime.month &&
+        shift.startTime.day == shift.endTime.day) return;
+    final startTod = shift.startTime.hour * 60 + shift.startTime.minute;
+    final endTod = shift.endTime.hour * 60 + shift.endTime.minute;
+    if (startTod >= endTod) return;
+
+    final dateStr = isStart
+        ? '${shift.endTime.day.toString().padLeft(2, '0')}.${shift.endTime.month.toString().padLeft(2, '0')}'
+        : '${shift.startTime.day.toString().padLeft(2, '0')}.${shift.startTime.month.toString().padLeft(2, '0')}';
+    final title = isStart ? 'Поменять дату начала?' : 'Поменять дату конца?';
+    final body = '${newDuration.toStringAsFixed(1)} ч. '
+        '${isStart ? "Дата начала" : "Дата конца"} — $dateStr?';
+
+    if (!mounted) return;
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Text(body),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Нет')),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Да')),
+        ],
+      ),
+    );
+    if (result != true) return;
+
+    if (isStart) {
+      final timeOfDay = TimeOfDay.fromDateTime(shift.startTime);
+      shift.startTime = DateTime(
+        shift.endTime.year, shift.endTime.month, shift.endTime.day,
+        timeOfDay.hour, timeOfDay.minute,
+      );
+    } else {
+      final timeOfDay = TimeOfDay.fromDateTime(shift.endTime);
+      shift.endTime = DateTime(
+        shift.startTime.year, shift.startTime.month, shift.startTime.day,
+        timeOfDay.hour, timeOfDay.minute,
+      );
+    }
   }
 
   void _showShiftMenu(String key, int index, ShiftEntry shift) {
