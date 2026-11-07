@@ -919,7 +919,10 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildNoteRow(String key, Note note) {
-    final lines = note.text.split('\n');
+    final allLines = note.text.split('\n');
+    final lines = allLines.take(3).toList();
+    final hasMore = allLines.length > 3;
+
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(8),
@@ -929,40 +932,47 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       child: GestureDetector(
         onLongPress: () => _deleteNoteDialog(key, note),
-        onTap: () => _showNoteDialog(key, note),
+        onTap: () => _showNoteViewDialog(key, note),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          children: lines.asMap().entries.map((e) {
-            final idx = e.key;
-            final line = e.value;
-            if (note.hasCheckboxes) {
-              final isChecked = note.checkedLines.contains(idx);
-              return Row(
-                children: [
-                  GestureDetector(
-                    onTap: () => _toggleCheckbox(key, note, idx),
-                    child: Icon(
+          children: [
+            if (note.title.isNotEmpty)
+              Text(
+                note.title,
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: _textColor),
+              ),
+            if (note.title.isNotEmpty) const SizedBox(height: 4),
+            ...lines.asMap().entries.map((e) {
+              final idx = e.key;
+              final line = e.value;
+              if (note.hasCheckboxes) {
+                final isChecked = note.checkedLines.contains(idx);
+                return Row(
+                  children: [
+                    Icon(
                       isChecked ? Icons.check_box : Icons.check_box_outline_blank,
                       color: isChecked ? Colors.blue : _subtextColor,
                       size: 20,
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      line,
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: isChecked ? _subtextColor : _textColor,
-                        decoration: isChecked ? TextDecoration.lineThrough : null,
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        line,
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: isChecked ? _subtextColor : _textColor,
+                          decoration: isChecked ? TextDecoration.lineThrough : null,
+                        ),
                       ),
                     ),
-                  ),
-                ],
-              );
-            }
-            return Text(line, style: TextStyle(fontSize: 14, color: _textColor));
-          }).toList(),
+                  ],
+                );
+              }
+              return Text(line, style: TextStyle(fontSize: 14, color: _textColor));
+            }),
+            if (hasMore)
+              Text('…', style: TextStyle(fontSize: 14, color: _subtextColor)),
+          ],
         ),
       ),
     );
@@ -989,6 +999,119 @@ class _HomeScreenState extends State<HomeScreen> {
     await _saveNotes();
   }
 
+  void _showNoteViewDialog(String key, Note note) {
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          final current = (_notes[key] ?? []).firstWhere(
+            (n) => n.id == note.id,
+            orElse: () => note,
+          );
+          final lines = current.text.split('\n');
+          final indexed = lines.asMap().entries.toList();
+          if (current.hasCheckboxes) {
+            indexed.sort((a, b) {
+              final aChecked = current.checkedLines.contains(a.key);
+              final bChecked = current.checkedLines.contains(b.key);
+              if (aChecked == bChecked) return a.key.compareTo(b.key);
+              return aChecked ? 1 : -1;
+            });
+          }
+
+          return AlertDialog(
+            title: current.title.isNotEmpty
+                ? Text(current.title, style: const TextStyle(fontWeight: FontWeight.bold))
+                : const Text('Заметка'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: indexed.map((e) {
+                  final idx = e.key;
+                  final line = e.value;
+                  if (current.hasCheckboxes) {
+                    final isChecked = current.checkedLines.contains(idx);
+                    return Row(
+                      children: [
+                        GestureDetector(
+                          onTap: () async {
+                            setState(() {
+                              final list = _notes[key];
+                              if (list == null) return;
+                              final i = list.indexWhere((n) => n.id == current.id);
+                              if (i < 0) return;
+                              final checked = List<int>.from(current.checkedLines);
+                              if (checked.contains(idx)) {
+                                checked.remove(idx);
+                              } else {
+                                checked.add(idx);
+                              }
+                              list[i] = Note(
+                                id: current.id, date: current.date,
+                                title: current.title, text: current.text,
+                                hasCheckboxes: current.hasCheckboxes,
+                                checkedLines: checked,
+                                photoPath: current.photoPath,
+                                createdAt: current.createdAt,
+                              );
+                            });
+                            await _saveNotes();
+                            if (mounted) setDialogState(() {});
+                            // Задержка 1 сек, потом сортировка (визуально)
+                            await Future.delayed(const Duration(seconds: 1));
+                            if (mounted) setDialogState(() {});
+                          },
+                          child: Icon(
+                            isChecked ? Icons.check_box : Icons.check_box_outline_blank,
+                            color: isChecked ? Colors.blue : _subtextColor,
+                            size: 20,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            line,
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: isChecked ? _subtextColor : _textColor,
+                              decoration: isChecked ? TextDecoration.lineThrough : null,
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  }
+                  return Text(line, style: TextStyle(fontSize: 14, color: _textColor));
+                }).toList(),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  _deleteNoteDialog(key, current);
+                },
+                child: const Text('Удалить', style: TextStyle(color: Colors.red)),
+              ),
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                  _showNoteDialog(key, current);
+                },
+                child: const Text('Редактировать'),
+              ),
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Закрыть'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+  
   void _deleteNoteDialog(String key, Note note) {
     showDialog(
       context: context,
@@ -1013,71 +1136,210 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _showNoteDialog(String key, Note? existing) {
+    final titleController = TextEditingController(text: existing?.title ?? '');
     final textController = TextEditingController(text: existing?.text ?? '');
     bool hasCheckboxes = existing?.hasCheckboxes ?? false;
-    List<int> checkedLines = existing?.checkedLines ?? [];
+    List<int> checkedLines = List<int>.from(existing?.checkedLines ?? []);
+    List<TextEditingController> lineControllers = [];
+    if (hasCheckboxes) {
+      final lines = (existing?.text ?? '').split('\n');
+      lineControllers = lines.map((l) => TextEditingController(text: l)).toList();
+      if (lineControllers.isEmpty) lineControllers = [TextEditingController()];
+    }
+    final lastFocusNode = FocusNode();
+    final scrollController = ScrollController();
+    // Фокус для поля «Текст» (чтобы вернуть после Switch)
+    final textFocusNode = FocusNode();
 
     showDialog(
       context: context,
       builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: Text(existing == null ? 'Новая заметка' : 'Редактировать заметку'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: textController,
-                  maxLines: 5,
-                  decoration: const InputDecoration(labelText: 'Текст (каждый абзац — с новой строки)'),
+        builder: (context, setDialogState) {
+          String collectText() {
+            if (hasCheckboxes) {
+              return lineControllers.map((c) => c.text).join('\n');
+            }
+            return textController.text;
+          }
+
+          void toggleCheckboxes(bool v) {
+            if (v && !hasCheckboxes) {
+              final lines = textController.text.split('\n');
+              lineControllers = lines.map((l) => TextEditingController(text: l)).toList();
+              if (lineControllers.isEmpty) lineControllers = [TextEditingController()];
+            } else if (!v && hasCheckboxes) {
+              textController.text = lineControllers.map((c) => c.text).join('\n');
+            }
+            setDialogState(() => hasCheckboxes = v);
+            // Возвращаем фокус на поле «Текст» после переключения
+            Future.delayed(const Duration(milliseconds: 100), () {
+              if (mounted) textFocusNode.requestFocus();
+            });
+          }
+
+          return AlertDialog(
+            title: Text(existing == null ? 'Новая заметка' : 'Редактировать заметку'),
+            content: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.5,
+              ),
+              child: SingleChildScrollView(
+                controller: scrollController,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: titleController,
+                      decoration: const InputDecoration(labelText: 'Заголовок'),
+                    ),
+                    const SizedBox(height: 8),
+                    if (!hasCheckboxes)
+                      TextField(
+                        controller: textController,
+                        focusNode: textFocusNode,
+                        minLines: 3,
+                        maxLines: 8,
+                        maxLength: 2000,
+                        textInputAction: TextInputAction.newline, // не закрывать клавиатуру
+                        keyboardType: TextInputType.multiline,
+                        decoration: const InputDecoration(labelText: 'Текст'),
+                      ),
+                    if (hasCheckboxes) ...[
+                      const SizedBox(height: 4),
+                      Text('Текст (список задач):', style: TextStyle(fontSize: 12, color: _subtextColor)),
+                      const SizedBox(height: 4),
+                      ...lineControllers.asMap().entries.map((e) {
+                        final idx = e.key;
+                        final ctrl = e.value;
+                        final isChecked = checkedLines.contains(idx);
+                        final isLast = idx == lineControllers.length - 1;
+                        return Row(
+                          children: [
+                            GestureDetector(
+                              onTap: () => setDialogState(() {
+                                if (isChecked) {
+                                  checkedLines.remove(idx);
+                                } else {
+                                  checkedLines.add(idx);
+                                }
+                              }),
+                              child: Icon(
+                                isChecked ? Icons.check_box : Icons.check_box_outline_blank,
+                                color: isChecked ? Colors.blue : _subtextColor,
+                                size: 20,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: TextField(
+                                controller: ctrl,
+                                focusNode: isLast ? lastFocusNode : null,
+                                textInputAction: TextInputAction.newline, // не закрывать клавиатуру
+                                keyboardType: TextInputType.multiline,
+                                decoration: const InputDecoration(
+                                  isDense: true,
+                                  border: InputBorder.none,
+                                  hintText: 'Задача',
+                                ),
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: isChecked ? _subtextColor : _textColor,
+                                  decoration: isChecked ? TextDecoration.lineThrough : null,
+                                ),
+                                onChanged: (_) => setDialogState(() {}),
+                                onSubmitted: (_) {
+                                  setDialogState(() {
+                                    lineControllers.add(TextEditingController());
+                                  });
+                                  Future.delayed(const Duration(milliseconds: 100), () {
+                                    if (!mounted) return;
+                                    lastFocusNode.requestFocus();
+                                    if (scrollController.hasClients) {
+                                      scrollController.animateTo(
+                                        scrollController.position.maxScrollExtent,
+                                        duration: const Duration(milliseconds: 200),
+                                        curve: Curves.easeOut,
+                                      );
+                                    }
+                                  });
+                                },
+                              ),
+                            ),
+                            IconButton(
+                              icon: Icon(Icons.close, size: 18, color: _subtextColor),
+                              onPressed: () => setDialogState(() {
+                                lineControllers.removeAt(idx);
+                                checkedLines.removeWhere((i) => i == idx);
+                                checkedLines = checkedLines.map((i) => i > idx ? i - 1 : i).toList();
+                                if (lineControllers.isEmpty) lineControllers = [TextEditingController()];
+                              }),
+                            ),
+                          ],
+                        );
+                      }),
+                    ],
+                  ],
                 ),
-                const SizedBox(height: 8),
-                SwitchListTile(
+              ),
+            ),
+            actions: [
+              // Оборачиваем SwitchListTile в Focus, чтобы не забирал фокус
+              Focus(
+                canRequestFocus: false,
+                child: SwitchListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: const Text('☐ Чекбоксы'),
-                  subtitle: const Text('Каждый абзац — с галочкой'),
+                  title: const Text('Список задач', style: TextStyle(fontSize: 14)),
                   value: hasCheckboxes,
-                  onChanged: (v) => setDialogState(() => hasCheckboxes = v),
+                  onChanged: toggleCheckboxes,
                 ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
-            TextButton(
-              onPressed: () async {
-                final text = textController.text.trim();
-                if (text.isEmpty) return;
-                setState(() {
-                  final list = _notes[key] ?? [];
-                  if (existing == null) {
-                    list.add(Note(
-                      id: 'note_${DateTime.now().millisecondsSinceEpoch}',
-                      date: key, text: text,
-                      hasCheckboxes: hasCheckboxes,
-                      checkedLines: checkedLines,
-                      createdAt: DateTime.now(),
-                    ));
-                  } else {
-                    final i = list.indexWhere((n) => n.id == existing.id);
-                    if (i >= 0) {
-                      list[i] = Note(
-                        id: existing.id, date: existing.date, text: text,
-                        hasCheckboxes: hasCheckboxes,
-                        checkedLines: checkedLines,
-                        createdAt: existing.createdAt,
-                      );
-                    }
-                  }
-                  _notes[key] = list;
-                });
-                await _saveNotes();
-                Navigator.pop(context);
-              },
-              child: const Text('Сохранить'),
-            ),
-          ],
-        ),
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
+                  TextButton(
+                    onPressed: () async {
+                      final text = collectText().trim();
+                      if (text.isEmpty) return;
+                      setState(() {
+                        final list = _notes[key] ?? [];
+                        if (existing == null) {
+                          list.add(Note(
+                            id: 'note_${DateTime.now().millisecondsSinceEpoch}',
+                            date: key,
+                            title: titleController.text.trim(),
+                            text: text,
+                            hasCheckboxes: hasCheckboxes,
+                            checkedLines: checkedLines,
+                            createdAt: DateTime.now(),
+                          ));
+                        } else {
+                          final i = list.indexWhere((n) => n.id == existing.id);
+                          if (i >= 0) {
+                            list[i] = Note(
+                              id: existing.id,
+                              date: existing.date,
+                              title: titleController.text.trim(),
+                              text: text,
+                              hasCheckboxes: hasCheckboxes,
+                              checkedLines: checkedLines,
+                              photoPath: existing.photoPath,
+                              createdAt: existing.createdAt,
+                            );
+                          }
+                        }
+                        _notes[key] = list;
+                      });
+                      await _saveNotes();
+                      if (mounted) Navigator.pop(context);
+                    },
+                    child: const Text('Сохранить'),
+                  ),
+                ],
+              ),
+            ],
+          );
+        },
       ),
     );
   }
