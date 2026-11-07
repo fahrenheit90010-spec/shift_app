@@ -125,7 +125,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   List<ShiftType> _shiftTypes = [];
   List<ShiftTemplate> _templates = [];
-  final Map<String, List<ShiftEntry>> _shifts = {};
+  final List<ShiftEntry> _shifts = [];
   List<Holiday> _holidays = [];
   Map<String, MonthRecord> _closedMonths = {};
   Map<String, List<Note>> _notes = {};
@@ -178,15 +178,11 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     final savedShifts = prefs.getStringList('shifts') ?? [];
-    final map = <String, List<ShiftEntry>>{};
-    for (final entry in savedShifts) {
-      final parts = entry.split('::');
-      if (parts.length == 2) {
-        try {
-          final list = jsonDecode(parts[1]) as List;
-          map[parts[0]] = list.map((e) => ShiftEntry.fromStorageString(e as String)).toList();
-        } catch (_) {}
-      }
+    final shiftsList = <ShiftEntry>[];
+    for (final s in savedShifts) {
+      try {
+        shiftsList.add(ShiftEntry.fromJson(jsonDecode(s) as Map<String, dynamic>));
+      } catch (_) {}
     }
 
     final savedClosed = prefs.getStringList('closed_months') ?? [];
@@ -201,8 +197,10 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _holidays = loadedHolidays;
       _shiftTypes = types;
-      _templates = [...ShiftTemplate.predefined(), ...customTemplates];
-      _shifts.addAll(map);
+      _templates = [...customTemplates, ...ShiftTemplate.predefined()];
+      _shifts
+        ..clear()
+        ..addAll(shiftsList);
       _closedMonths = closed;
       _notes = notesMap;
     });
@@ -215,9 +213,9 @@ class _HomeScreenState extends State<HomeScreen> {
     final prevMonth = DateTime(now.year, now.month - 1, 1);
     final key = '${prevMonth.year}-${prevMonth.month}';
     if (!_closedMonths.containsKey(key)) {
-      final hasShifts = _shifts.keys.any((k) {
-        final parts = k.split('-');
-        return int.parse(parts[0]) == prevMonth.year && int.parse(parts[1]) == prevMonth.month;
+      final hasShifts = _shifts.any((s) {
+        final salaryDate = _salaryDateFor(s);
+        return salaryDate.year == prevMonth.year && salaryDate.month == prevMonth.month;
       });
       if (hasShifts) await _closeMonth(prevMonth.year, prevMonth.month);
     }
@@ -225,10 +223,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _saveShifts() async {
     final prefs = await SharedPreferences.getInstance();
-    final list = _shifts.entries.map((e) {
-      final jsonList = e.value.map((s) => s.toStorageString()).toList();
-      return '${e.key}::${jsonEncode(jsonList)}';
-    }).toList();
+    final list = _shifts.map((s) => jsonEncode(s.toJson())).toList();
     await prefs.setStringList('shifts', list);
   }
 
@@ -278,40 +273,25 @@ class _HomeScreenState extends State<HomeScreen> {
     int workShifts = 0, sickDays = 0, vacationDays = 0;
     double totalHours = 0, overtime = 0, undertime = 0, totalAmount = 0;
     final ratesUsed = <String>{};
-    final countedGroups = <String>{};
 
-    for (final e in _shifts.entries) {
-      for (final shift in e.value) {
-        final salaryDate = _salaryDateFor(shift);
-        if (salaryDate.year != year || salaryDate.month != month) continue;
+    for (final shift in _shifts) {
+      final salaryDate = _salaryDateFor(shift);
+      if (salaryDate.year != year || salaryDate.month != month) continue;
 
-        final type = _getShiftType(shift.typeId);
-        if (type == null) continue;
-        if (type.id == 'sick') { sickDays++; continue; }
-        if (type.id == 'vacation') { vacationDays++; continue; }
-        if (!type.countInSalary) continue;
-        if (shift.groupId != null) {
-          if (countedGroups.contains(shift.groupId)) continue;
-          countedGroups.add(shift.groupId!);
-          final isSalaryRecord = _salaryFromStart ? !shift.isContinuation : shift.isContinuation;
-          if (isSalaryRecord) {
-            workShifts++;
-            totalAmount += _calculateAmountForGroup(shift);
-          }
-          totalHours += shift.actualHours;
-          final diff = shift.actualHours - type.plannedHours;
-          if (diff > 0) overtime += diff;
-          if (diff < 0) undertime += -diff;
-        } else {
-          workShifts++;
-          totalHours += shift.actualHours;
-          final diff = shift.actualHours - type.plannedHours;
-          if (diff > 0) overtime += diff;
-          if (diff < 0) undertime += -diff;
-          totalAmount += _calculateAmount(shift, type);
-        }
-        ratesUsed.add('${type.rateValue.toStringAsFixed(0)} ₽ ${type.rateType == RateType.perHour ? "/ч" : "/смена"}');
-      }
+      final type = _getShiftType(shift.typeId);
+      if (type == null) continue;
+      if (type.id == 'sick') { sickDays++; continue; }
+      if (type.id == 'vacation') { vacationDays++; continue; }
+      if (!type.countInSalary) continue;
+
+      workShifts++;
+      totalHours += shift.actualHours;
+      final diff = shift.actualHours - type.plannedHours;
+      if (diff > 0) overtime += diff;
+      if (diff < 0) undertime += -diff;
+      totalAmount += _calculateAmount(shift, type);
+
+      ratesUsed.add('${type.rateValue.toStringAsFixed(0)} ₽ ${type.rateType == RateType.perHour ? "/ч" : "/смена"}');
     }
 
     final record = MonthRecord(
@@ -347,42 +327,44 @@ class _HomeScreenState extends State<HomeScreen> {
     return day.weekday == DateTime.saturday || day.weekday == DateTime.sunday;
   }
   // Проверка пересечения смены с существующими (на этом дне и следующем)
-  ShiftEntry? _findConflict(ShiftEntry newShift) {
-    for (final e in _shifts.entries) {
-      for (final existing in e.value) {
-        if (existing.groupId != null && existing.groupId == newShift.groupId) continue;
-        final newStart = newShift.startTime;
-        final newEnd = newShift.endTime;
-        final exStart = existing.startTime;
-        final exEnd = existing.endTime;
-        // Пересечение: newStart < exEnd && exStart < newEnd
-        if (newStart.isBefore(exEnd) && exStart.isBefore(newEnd)) {
-          return existing;
-        }
+  List<ShiftEntry> _findAllConflicts(ShiftEntry newShift) {
+    final result = <ShiftEntry>[];
+    for (final existing in _shifts) {
+      if (existing.id == newShift.id) continue;
+      final newStart = newShift.startTime;
+      final newEnd = newShift.endTime;
+      final exStart = existing.startTime;
+      final exEnd = existing.endTime;
+      if (newStart.isBefore(exEnd) && exStart.isBefore(newEnd)) {
+        result.add(existing);
       }
     }
-    return null;
+    return result;
   }
 
-  // Показать диалог конфликта. Возвращает: 'replace', 'add', 'cancel'
-  Future<String> _showConflictDialog(ShiftEntry conflict, ShiftEntry newShift) async {
-    final type = _getShiftType(conflict.typeId);
+  // Показать диалог конфликта. Возвращает: 'replace' или 'cancel'
+  Future<String> _showConflictDialog(List<ShiftEntry> conflicts, ShiftEntry newShift) async {
     final newType = _getShiftType(newShift.typeId);
-    final conflictStart = '${conflict.startTime.hour.toString().padLeft(2, '0')}:${conflict.startTime.minute.toString().padLeft(2, '0')}';
-    final conflictEnd = '${conflict.endTime.hour.toString().padLeft(2, '0')}:${conflict.endTime.minute.toString().padLeft(2, '0')}';
     final newStart = '${newShift.startTime.hour.toString().padLeft(2, '0')}:${newShift.startTime.minute.toString().padLeft(2, '0')}';
     final newEnd = '${newShift.endTime.hour.toString().padLeft(2, '0')}:${newShift.endTime.minute.toString().padLeft(2, '0')}';
+
+    final lines = conflicts.map((c) {
+      final t = _getShiftType(c.typeId);
+      final date = '${c.startTime.day.toString().padLeft(2, '0')}.${c.startTime.month.toString().padLeft(2, '0')}';
+      final s = '${c.startTime.hour.toString().padLeft(2, '0')}:${c.startTime.minute.toString().padLeft(2, '0')}';
+      final e = '${c.endTime.hour.toString().padLeft(2, '0')}:${c.endTime.minute.toString().padLeft(2, '0')}';
+      return '• «${t?.name ?? "?"}» ($date, $s–$e)';
+    }).join('\n');
 
     final result = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Конфликт'),
         content: Text(
-          'Новая смена «${newType?.name ?? "?"}» ($newStart–$newEnd) пересекается с «${type?.name ?? "?"}» ($conflictStart–$conflictEnd).\n\nЧто делать?',
+          'Новая смена «${newType?.name ?? "?"}» ($newStart–$newEnd) пересекается с:\n$lines\n\nЗаменить все?',
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, 'cancel'), child: const Text('Отмена')),
-          TextButton(onPressed: () => Navigator.pop(context, 'add'), child: const Text('Добавить всё равно')),
           TextButton(onPressed: () => Navigator.pop(context, 'replace'), child: const Text('Заменить')),
         ],
       ),
@@ -392,78 +374,44 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // Удалить смену (или группу) по shift
   void _deleteShift(ShiftEntry shift) {
-    final groupId = shift.groupId;
-    if (groupId != null) {
-      for (final k in _shifts.keys.toList()) {
-        _shifts[k]?.removeWhere((s) => s.groupId == groupId);
-        if (_shifts[k]?.isEmpty == true) _shifts.remove(k);
-      }
-    } else {
-      for (final k in _shifts.keys.toList()) {
-        _shifts[k]?.remove(shift);
-        if (_shifts[k]?.isEmpty == true) _shifts.remove(k);
-      }
-    }
+    _shifts.removeWhere((s) => s.id == shift.id);
   }
 
   // Добавить смену с проверкой конфликта
   Future<void> _addShiftWithConflictCheck(ShiftType type, DateTime date) async {
-    final key = _dateKey(date);
-    final existing = _shifts[key] ?? [];
-    if (existing.length >= 2) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Максимум 2 смены в день')),
-      );
-      return;
-    }
+    final newShift = _createShiftEntry(type, date);
 
-    final entries = _createShiftEntries(type, date);
-    final newShift = entries[0];
-
-    final conflict = _findConflict(newShift);
-    if (conflict != null) {
+    final conflicts = _findAllConflicts(newShift);
+    if (conflicts.isNotEmpty) {
       if (!mounted) return;
-      final action = await _showConflictDialog(conflict, newShift);
+      final action = await _showConflictDialog(conflicts, newShift);
       if (action == 'cancel') return;
       if (action == 'replace') {
         setState(() {
-          _deleteShift(conflict);
+          for (final c in conflicts) {
+            _deleteShift(c);
+          }
         });
       }
     }
 
     setState(() {
-      final current = _shifts[key] ?? [];
-      _shifts[key] = [...current, entries[0]];
-      if (entries.length == 2) {
-        final nextKey = _dateKey(date.add(const Duration(days: 1)));
-        final nextExisting = _shifts[nextKey] ?? [];
-        _shifts[nextKey] = [...nextExisting, entries[1]];
-      }
+      _shifts.add(newShift);
     });
     await _saveShifts();
   }
 
-  // Создать смену (с разбиением суток на две записи)
-  List<ShiftEntry> _createShiftEntries(ShiftType type, DateTime date) {
+  // Создать смену (одна запись, даже если пересекает полночь)
+  ShiftEntry _createShiftEntry(ShiftType type, DateTime date) {
     final start = DateTime(date.year, date.month, date.day, type.startHour, type.startMinute);
     final totalMinutes = (type.plannedHours * 60).round();
     final end = start.add(Duration(minutes: totalMinutes));
-
-    // Если смена пересекает полночь (end на следующий день) — разбиваем на две записи
-    final crossesMidnight = end.day != start.day;
-
-    if (crossesMidnight) {
-      final midnight = DateTime(start.year, start.month, start.day + 1);
-      final groupId = 'group_${DateTime.now().microsecondsSinceEpoch}_${DateTime.now().hashCode}';
-      return [
-        ShiftEntry(typeId: type.id, startTime: start, endTime: midnight, groupId: groupId, isContinuation: false),
-        ShiftEntry(typeId: type.id, startTime: midnight, endTime: end, groupId: groupId, isContinuation: true),
-      ];
-    } else {
-      return [ShiftEntry(typeId: type.id, startTime: start, endTime: end)];
-    }
+    return ShiftEntry(
+      id: 'shift_${DateTime.now().microsecondsSinceEpoch}',
+      typeId: type.id,
+      startTime: start,
+      endTime: end,
+    );
   }
 
   @override
@@ -547,40 +495,22 @@ class _HomeScreenState extends State<HomeScreen> {
   Map<String, dynamic> _computeStats(int year, int month) {
     int workShifts = 0, sickDays = 0, vacationDays = 0;
     double totalHours = 0, overtime = 0, undertime = 0, totalAmount = 0;
-    final countedGroups = <String>{};
 
-    for (final e in _shifts.entries) {
-      for (final shift in e.value) {
-        final salaryDate = _salaryDateFor(shift);
-        if (salaryDate.year != year || salaryDate.month != month) continue;
-        final type = _getShiftType(shift.typeId);
-        if (type == null) continue;
-        if (type.id == 'sick') { sickDays++; continue; }
-        if (type.id == 'vacation') { vacationDays++; continue; }
-        if (!type.countInSalary) continue;
-        // Для смен через полночь (groupId): считаем только на salaryDate
-        if (shift.groupId != null) {
-          if (countedGroups.contains(shift.groupId)) continue;
-          countedGroups.add(shift.groupId!);
-          // Сумма только для той записи, которая попадает на salaryDate
-          final isSalaryRecord = _salaryFromStart ? !shift.isContinuation : shift.isContinuation;
-          if (isSalaryRecord) {
-            workShifts++;
-            totalAmount += _calculateAmountForGroup(shift);
-          }
-          totalHours += shift.actualHours;
-          final diff = shift.actualHours - type.plannedHours;
-          if (diff > 0) overtime += diff;
-          if (diff < 0) undertime += -diff;
-        } else {
-          workShifts++;
-          totalHours += shift.actualHours;
-          final diff = shift.actualHours - type.plannedHours;
-          if (diff > 0) overtime += diff;
-          if (diff < 0) undertime += -diff;
-          totalAmount += _calculateAmount(shift, type);
-        }
-      }
+    for (final shift in _shifts) {
+      final salaryDate = _salaryDateFor(shift);
+      if (salaryDate.year != year || salaryDate.month != month) continue;
+      final type = _getShiftType(shift.typeId);
+      if (type == null) continue;
+      if (type.id == 'sick') { sickDays++; continue; }
+      if (type.id == 'vacation') { vacationDays++; continue; }
+      if (!type.countInSalary) continue;
+
+      workShifts++;
+      totalHours += shift.actualHours;
+      final diff = shift.actualHours - type.plannedHours;
+      if (diff > 0) overtime += diff;
+      if (diff < 0) undertime += -diff;
+      totalAmount += _calculateAmount(shift, type);
     }
 
     return {
@@ -633,7 +563,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _generateFromTemplate(ShiftTemplate template, DateTime startDate, String typeId, int months) async {
     final endDate = DateTime(startDate.year, startDate.month + months, 0);
-    final newShifts = <String, List<ShiftEntry>>{};
+    final newShifts = <ShiftEntry>[];
     int overwritten = 0;
 
     for (int i = 0; i <= endDate.difference(startDate).inDays; i++) {
@@ -644,19 +574,15 @@ class _HomeScreenState extends State<HomeScreen> {
       final step = template.cycle[i % template.cycle.length];
       if (step == 'rest') continue;
 
-      final effectiveTypeId = (step == 'work') ? typeId : step;
+      final effectiveTypeId = (step == 'work')
+          ? (template.fixedTypeId ?? typeId)
+          : step;
       final type = _getShiftType(effectiveTypeId);
       if (type == null) continue;
 
-      final key = _dateKey(date);
-      if (_shifts.containsKey(key)) { overwritten++; continue; }
-
-      final entries = _createShiftEntries(type, date);
-      newShifts[key] = [entries[0]];
-      if (entries.length == 2) {
-        final nextKey = _dateKey(date.add(const Duration(days: 1)));
-        newShifts[nextKey] = [entries[1]];
-      }
+      final newShift = _createShiftEntry(type, date);
+      if (_findAllConflicts(newShift).isNotEmpty) { overwritten++; continue; }
+      newShifts.add(newShift);
     }
 
     if (overwritten > 0) {
@@ -674,28 +600,29 @@ class _HomeScreenState extends State<HomeScreen> {
       );
       if (ok != true) return;
 
+      newShifts.clear();
       for (int i = 0; i <= endDate.difference(startDate).inDays; i++) {
         final date = startDate.add(Duration(days: i));
         if (date.isAfter(endDate)) break;
         if (_isMonthClosed(date.year, date.month)) continue;
         final step = template.cycle[i % template.cycle.length];
         if (step == 'rest') continue;
-        final effectiveTypeId = (step == 'work') ? typeId : step;
+        final effectiveTypeId = (step == 'work')
+            ? (template.fixedTypeId ?? typeId)
+            : step;
         final type = _getShiftType(effectiveTypeId);
         if (type == null) continue;
-        final key = _dateKey(date);
-        final entries = _createShiftEntries(type, date);
-        newShifts[key] = [entries[0]];
-        if (entries.length == 2) {
-          final nextKey = _dateKey(date.add(const Duration(days: 1)));
-          newShifts[nextKey] = [entries[1]];
-        }
+        newShifts.add(_createShiftEntry(type, date));
       }
     }
 
     setState(() {
-      for (final e in newShifts.entries) {
-        _shifts[e.key] = e.value;
+      for (final ns in newShifts) {
+        final conflicts = _findAllConflicts(ns);
+        for (final c in conflicts) {
+          _shifts.removeWhere((s) => s.id == c.id);
+        }
+        _shifts.add(ns);
       }
     });
     await _saveShifts();
@@ -755,25 +682,38 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildDayCell(DateTime day, {bool isSelected = false, bool isOutside = false}) {
-    final key = _dateKey(day);
-    final shifts = _shifts[key] ?? [];
     final isRed = _isRedDay(day);
     final isToday = isSameDay(day, DateTime.now());
     final isClosed = _isMonthClosed(day.year, day.month);
 
-    // Отделяем «свои» смены от «продолжений»
-    final ownShifts = shifts.where((s) => !s.isContinuation).toList();
-    final continuations = shifts.where((s) => s.isContinuation).toList();
+    final dayStart = DateTime(day.year, day.month, day.day);
+    final dayEnd = dayStart.add(const Duration(days: 1));
+
+    // Смены, пересекающиеся с этим днём
+    final overlapping = _shifts.where((s) =>
+        s.startTime.isBefore(dayEnd) && dayStart.isBefore(s.endTime)).toList();
+
+    // Смены, которые НАЧАЛИСЬ в этот день
+    final startedHere = overlapping.where((s) =>
+        s.startTime.year == day.year &&
+        s.startTime.month == day.month &&
+        s.startTime.day == day.day).toList();
+
+    // Смены-продолжения (не начались здесь, но пересекают)
+    final continuations = overlapping.where((s) =>
+        !(s.startTime.year == day.year &&
+          s.startTime.month == day.month &&
+          s.startTime.day == day.day)).toList();
 
     Widget? background;
-    if (ownShifts.length == 1) {
-      final type = _getShiftType(ownShifts[0].typeId);
+    if (startedHere.length == 1) {
+      final type = _getShiftType(startedHere[0].typeId);
       if (type != null) {
         background = Container(decoration: BoxDecoration(color: type.color, shape: BoxShape.circle));
       }
-    } else if (ownShifts.length >= 2) {
-      final type1 = _getShiftType(ownShifts[0].typeId);
-      final type2 = _getShiftType(ownShifts[1].typeId);
+    } else if (startedHere.length >= 2) {
+      final type1 = _getShiftType(startedHere[0].typeId);
+      final type2 = _getShiftType(startedHere[1].typeId);
       if (type1 != null && type2 != null) {
         background = ClipOval(
           child: Transform.rotate(
@@ -789,7 +729,7 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    // Если есть продолжение — маленькая точка (даже если есть «своя» смена)
+    // Точка — если есть смена-продолжение
     Widget? continuationDot;
     if (continuations.isNotEmpty) {
       final type = _getShiftType(continuations[0].typeId);
@@ -818,8 +758,8 @@ class _HomeScreenState extends State<HomeScreen> {
             if (continuationDot != null) continuationDot,
             Center(
               child: Text('${day.day}', style: TextStyle(
-                color: ownShifts.isNotEmpty ? Colors.black : (isRed ? _redColor : _textColor),
-                fontWeight: isRed || ownShifts.isNotEmpty || isToday || isSelected ? FontWeight.bold : FontWeight.normal,
+                color: startedHere.isNotEmpty ? Colors.black : (isRed ? _redColor : _textColor),
+                fontWeight: isRed || startedHere.isNotEmpty || isToday || isSelected ? FontWeight.bold : FontWeight.normal,
               )),
             ),
           ],
@@ -844,7 +784,10 @@ class _HomeScreenState extends State<HomeScreen> {
       );
     }
     final key = _dateKey(_selectedDay!);
-    final shifts = _shifts[key] ?? [];
+    final dayStart = DateTime(_selectedDay!.year, _selectedDay!.month, _selectedDay!.day);
+    final dayEnd = dayStart.add(const Duration(days: 1));
+    final shifts = _shifts.where((s) =>
+        s.startTime.isBefore(dayEnd) && dayStart.isBefore(s.endTime)).toList();
     if (shifts.isEmpty) return _buildShiftPicker();
     return _buildShiftCardList(key, shifts);
   }
@@ -920,14 +863,13 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 8),
           ...shifts.asMap().entries.map((e) => _buildShiftRow(key, e.key, e.value)),
-          if (shifts.length < 2)
-            TextButton.icon(
-              onPressed: () {
-                _showAddShiftDialog(key);
-              },
-              icon: const Icon(Icons.add, color: Colors.blue),
-              label: const Text('Добавить ещё смену', style: TextStyle(color: Colors.blue)),
-            ),
+          TextButton.icon(
+            onPressed: () {
+              _showAddShiftDialog(key);
+            },
+            icon: const Icon(Icons.add, color: Colors.blue),
+            label: const Text('Добавить ещё смену', style: TextStyle(color: Colors.blue)),
+          ),
           const Divider(height: 24),
           _buildNotesSection(key),
         ],
@@ -1404,8 +1346,12 @@ Widget _buildNoteRow(String key, Note note) {
 
   Widget _buildShiftRow(String key, int index, ShiftEntry shift) {
     final type = _getShiftType(shift.typeId);
-    final amount = shift.groupId != null ? _calculateAmountForGroup(shift) : _calculateAmount(shift, type);
-    final isSalaryRecord = shift.groupId == null || (_salaryFromStart ? !shift.isContinuation : shift.isContinuation);
+    final amount = _calculateAmount(shift, type);
+    final salaryDate = _salaryDateFor(shift);
+    final selected = _selectedDay!;
+    final isSalaryRecord = salaryDate.year == selected.year &&
+        salaryDate.month == selected.month &&
+        salaryDate.day == selected.day;
     final startStr = '${shift.startTime.hour.toString().padLeft(2, '0')}:${shift.startTime.minute.toString().padLeft(2, '0')}';
     final endStr = '${shift.endTime.hour.toString().padLeft(2, '0')}:${shift.endTime.minute.toString().padLeft(2, '0')}';
 
@@ -1429,7 +1375,15 @@ Widget _buildNoteRow(String key, Note note) {
                 ),
               const SizedBox(width: 8),
               Expanded(child: Text(
-                '${type?.name ?? '?'}${shift.isContinuation ? ' (продолжение)' : ''}',
+                () {
+                  final startedToday = shift.startTime.year == selected.year &&
+                      shift.startTime.month == selected.month &&
+                      shift.startTime.day == selected.day;
+                  final suffix = startedToday
+                      ? ''
+                      : ' (с ${shift.startTime.day.toString().padLeft(2, '0')}.${shift.startTime.month.toString().padLeft(2, '0')})';
+                  return '${type?.name ?? '?'}$suffix';
+                }(),
                 style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: _textColor),
               )),
               IconButton(
@@ -1443,15 +1397,31 @@ Widget _buildNoteRow(String key, Note note) {
               GestureDetector(
                 onTap: () async {
                   final picked = await _pickTime(shift.startTime);
-                  if (picked != null) {
+                  if (picked == null) return;
+                  final oldStart = shift.startTime;
+                  final oldEnd = shift.endTime;
+                  shift.startTime = picked;
+                  if (!shift.endTime.isAfter(shift.startTime)) {
+                    shift.endTime = shift.startTime.add(const Duration(hours: 1));
+                  }
+                  final conflicts = _findAllConflicts(shift);
+                  if (conflicts.isNotEmpty) {
+                    if (!mounted) return;
+                    final action = await _showConflictDialog(conflicts, shift);
+                    if (action == 'cancel') {
+                      shift.startTime = oldStart;
+                      shift.endTime = oldEnd;
+                      setState(() {});
+                      return;
+                    }
                     setState(() {
-                      shift.startTime = picked;
-                      if (!shift.endTime.isAfter(shift.startTime)) {
-                        shift.endTime = shift.startTime.add(const Duration(hours: 1));
+                      for (final c in conflicts) {
+                        _shifts.removeWhere((s) => s.id == c.id);
                       }
                     });
-                    await _saveShifts();
                   }
+                  setState(() {});
+                  await _saveShifts();
                 },
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -1462,16 +1432,30 @@ Widget _buildNoteRow(String key, Note note) {
               GestureDetector(
                 onTap: () async {
                   final picked = await _pickTime(shift.endTime);
-                  if (picked != null) {
-                    setState(() {
-                      var newEnd = picked;
-                      if (!newEnd.isAfter(shift.startTime)) {
-                        newEnd = newEnd.add(const Duration(days: 1));
-                      }
-                      shift.endTime = newEnd;
-                    });
-                    await _saveShifts();
+                  if (picked == null) return;
+                  final oldEnd = shift.endTime;
+                  var newEnd = picked;
+                  if (!newEnd.isAfter(shift.startTime)) {
+                    newEnd = newEnd.add(const Duration(days: 1));
                   }
+                  shift.endTime = newEnd;
+                  final conflicts = _findAllConflicts(shift);
+                  if (conflicts.isNotEmpty) {
+                    if (!mounted) return;
+                    final action = await _showConflictDialog(conflicts, shift);
+                    if (action == 'cancel') {
+                      shift.endTime = oldEnd;
+                      setState(() {});
+                      return;
+                    }
+                    setState(() {
+                      for (final c in conflicts) {
+                        _shifts.removeWhere((s) => s.id == c.id);
+                      }
+                    });
+                  }
+                  setState(() {});
+                  await _saveShifts();
                 },
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -1522,20 +1506,7 @@ Widget _buildNoteRow(String key, Note note) {
               title: Text('Удалить смену', style: TextStyle(color: _redColor)),
               onTap: () async {
                 setState(() {
-                  final groupId = shift.groupId;
-                  if (groupId != null) {
-                    // Удаляем все записи с этим groupId (во всех днях)
-                    for (final k in _shifts.keys.toList()) {
-                      _shifts[k]?.removeWhere((s) => s.groupId == groupId);
-                      if (_shifts[k]?.isEmpty == true) _shifts.remove(k);
-                    }
-                  } else {
-                    final list = _shifts[key];
-                    if (list != null) {
-                      list.removeAt(index);
-                      if (list.isEmpty) _shifts.remove(key);
-                    }
-                  }
+                  _shifts.removeWhere((s) => s.id == shift.id);
                 });
                 await _saveShifts();
                 Navigator.pop(context);
@@ -1603,33 +1574,6 @@ Widget _buildNoteRow(String key, Note note) {
         ),
       ),
     );
-  }
-  double _calculateAmountForGroup(ShiftEntry shift) {
-    final type = _getShiftType(shift.typeId);
-    if (type == null || !type.countInSalary) return 0;
-
-    // Собираем все записи группы
-    double totalGroupHours = 0;
-    for (final e in _shifts.entries) {
-      for (final s in e.value) {
-        if (s.groupId == shift.groupId) {
-          totalGroupHours += s.actualHours;
-        }
-      }
-    }
-
-    final rateValue = shift.overrideRateValue ?? type.rateValue;
-    final rateType = shift.overrideRateType ?? type.rateType;
-    final coefOver = shift.overrideCoefOvertime ?? type.coefOvertime;
-    final coefUnder = shift.overrideCoefUndertime ?? type.coefUndertime;
-
-    if (rateType == RateType.perHour) return totalGroupHours * rateValue;
-    if (type.plannedHours <= 0) return rateValue;
-    final hourCost = rateValue / type.plannedHours;
-    final diff = totalGroupHours - type.plannedHours;
-    if (diff > 0) return rateValue + diff * hourCost * coefOver;
-    if (diff < 0) return rateValue - (-diff) * hourCost * coefUnder;
-    return rateValue;
   }
 
   double _calculateAmount(ShiftEntry shift, ShiftType? type) {

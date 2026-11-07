@@ -68,20 +68,20 @@ class ShiftType {
 enum RateType { perHour, perShift }
 
 class ShiftEntry {
+  final String id;
   String typeId;
   DateTime startTime;
   DateTime endTime;
   int breakMinutes;
-  String? groupId;
-  bool isContinuation;
   double? overrideRateValue;
   RateType? overrideRateType;
   double? overrideCoefOvertime;
   double? overrideCoefUndertime;
 
   ShiftEntry({
+    required this.id,
     required this.typeId, required this.startTime, required this.endTime,
-    this.breakMinutes = 0, this.groupId, this.isContinuation = false,
+    this.breakMinutes = 0,
     this.overrideRateValue, this.overrideRateType,
     this.overrideCoefOvertime, this.overrideCoefUndertime,
   });
@@ -91,25 +91,31 @@ class ShiftEntry {
     return diff > 0 ? diff / 60.0 : 0;
   }
 
-  String toStorageString() {
-    return '$typeId|${startTime.toIso8601String()}|${endTime.toIso8601String()}|$breakMinutes|${groupId ?? ''}|$isContinuation|${overrideRateValue ?? ''}|${overrideRateType?.index ?? ''}|${overrideCoefOvertime ?? ''}|${overrideCoefUndertime ?? ''}';
-  }
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'typeId': typeId,
+    'startTime': startTime.toIso8601String(),
+    'endTime': endTime.toIso8601String(),
+    'breakMinutes': breakMinutes,
+    'overrideRateValue': overrideRateValue,
+    'overrideRateType': overrideRateType?.index,
+    'overrideCoefOvertime': overrideCoefOvertime,
+    'overrideCoefUndertime': overrideCoefUndertime,
+  };
 
-  factory ShiftEntry.fromStorageString(String s) {
-    final parts = s.split('|');
-    return ShiftEntry(
-      typeId: parts[0],
-      startTime: DateTime.parse(parts[1]),
-      endTime: DateTime.parse(parts[2]),
-      breakMinutes: int.tryParse(parts[3]) ?? 0,
-      groupId: parts.length > 4 && parts[4].isNotEmpty ? parts[4] : null,
-      isContinuation: parts.length > 5 && parts[5] == 'true',
-      overrideRateValue: parts.length > 6 && parts[6].isNotEmpty ? double.tryParse(parts[6]) : null,
-      overrideRateType: parts.length > 7 && parts[7].isNotEmpty ? RateType.values[int.parse(parts[7])] : null,
-      overrideCoefOvertime: parts.length > 8 && parts[8].isNotEmpty ? double.tryParse(parts[8]) : null,
-      overrideCoefUndertime: parts.length > 9 && parts[9].isNotEmpty ? double.tryParse(parts[9]) : null,
-    );
-  }
+  factory ShiftEntry.fromJson(Map<String, dynamic> json) => ShiftEntry(
+    id: json['id'] as String,
+    typeId: json['typeId'] as String,
+    startTime: DateTime.parse(json['startTime'] as String),
+    endTime: DateTime.parse(json['endTime'] as String),
+    breakMinutes: (json['breakMinutes'] ?? 0) as int,
+    overrideRateValue: (json['overrideRateValue'] as num?)?.toDouble(),
+    overrideRateType: json['overrideRateType'] != null
+        ? RateType.values[json['overrideRateType'] as int]
+        : null,
+    overrideCoefOvertime: (json['overrideCoefOvertime'] as num?)?.toDouble(),
+    overrideCoefUndertime: (json['overrideCoefUndertime'] as num?)?.toDouble(),
+  );
 }
 
 class MonthRecord {
@@ -161,23 +167,26 @@ class ShiftTemplate {
   final String description;
   final int priority;
   final bool isCustom;
+  final String? fixedTypeId;
 
   const ShiftTemplate({
     required this.id, required this.name, required this.cycle,
     required this.description, required this.priority, this.isCustom = false,
+    this.fixedTypeId,
   });
 
   static List<ShiftTemplate> predefined() => [
-    const ShiftTemplate(id: '2_2', name: '2/2', cycle: ['work','work','rest','rest'], description: '2 рабочих, 2 отдыха', priority: 1),
-    const ShiftTemplate(id: '5_2', name: '5/2', cycle: ['work','work','work','work','work','rest','rest'], description: '5 рабочих, 2 отдыха', priority: 2),
-    const ShiftTemplate(id: '3_3', name: '3/3', cycle: ['work','work','work','rest','rest','rest'], description: '3 рабочих, 3 отдыха', priority: 3),
-    const ShiftTemplate(id: '2_2_3', name: '2/2/3', cycle: ['work','work','rest','rest','work','work','work'], description: '2 рабочих, 2 отдыха, 3 рабочих', priority: 4),
-    const ShiftTemplate(id: '1_3', name: 'Сутки через трое', cycle: ['work','rest','rest','rest'], description: '1 рабочий, 3 отдыха', priority: 5),
+    const ShiftTemplate(id: '2_2', name: '2/2', cycle: ['work','work','rest','rest'], description: '2 работы, 2 отдыха (цикл 4 дня)', priority: 1),
+    const ShiftTemplate(id: '5_2', name: '5/2', cycle: ['work','work','work','work','work','rest','rest'], description: '5 работ, 2 отдыха (цикл 7 дней)', priority: 2),
+    const ShiftTemplate(id: '3_3', name: '3/3', cycle: ['work','work','work','rest','rest','rest'], description: '3 работы, 3 отдыха (цикл 6 дней)', priority: 3),
+    const ShiftTemplate(id: '4_3', name: '4/3', cycle: ['work','work','work','work','rest','rest','rest'], description: '4 работы, 3 отдыха (цикл 7 дней)', priority: 4),
+    const ShiftTemplate(id: '1_3', name: '1/3', cycle: ['work','rest','rest','rest'], description: '1 работа, 3 отдыха (цикл 4 дня)', priority: 5),
   ];
 
   Map<String, dynamic> toJson() => {
     'id': id, 'name': name, 'cycle': cycle, 'description': description,
     'priority': priority, 'isCustom': isCustom,
+    'fixedTypeId': fixedTypeId,
   };
 
   factory ShiftTemplate.fromJson(Map<String, dynamic> json) => ShiftTemplate(
@@ -186,6 +195,7 @@ class ShiftTemplate {
     description: json['description'] ?? '',
     priority: json['priority'] ?? 1,
     isCustom: json['isCustom'] ?? false,
+    fixedTypeId: json['fixedTypeId'],
   );
 }
 
