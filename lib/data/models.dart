@@ -189,13 +189,13 @@ class ShiftTemplate {
   );
 }
 
-// Заметка (без чекбоксов, с фото)
+// Заметка (без чекбоксов, с несколькими фото)
 class Note {
   final String id;
   final String date;
   final String title;
   final String text;
-  final String? photoPath;
+  final List<String> photoPaths;
   final String? photoComment;
   final DateTime createdAt;
 
@@ -204,26 +204,38 @@ class Note {
     required this.date,
     this.title = '',
     required this.text,
-    this.photoPath,
+    List<String>? photoPaths,
     this.photoComment,
     required this.createdAt,
-  });
+  }) : photoPaths = photoPaths ?? [];
 
   Map<String, dynamic> toJson() => {
     'id': id, 'date': date, 'title': title, 'text': text,
-    'photoPath': photoPath, 'photoComment': photoComment,
+    'photoPaths': photoPaths,
+    'photoComment': photoComment,
     'createdAt': createdAt.toIso8601String(),
   };
 
-  factory Note.fromJson(Map<String, dynamic> json) => Note(
-    id: json['id'],
-    date: json['date'],
-    title: json['title'] ?? '',
-    text: json['text'],
-    photoPath: json['photoPath'],
-    photoComment: json['photoComment'],
-    createdAt: DateTime.parse(json['createdAt']),
-  );
+  factory Note.fromJson(Map<String, dynamic> json) {
+    // Миграция: старые заметки хранили photoPath (String?), новые — photoPaths (List<String>)
+    List<String> paths;
+    if (json['photoPaths'] is List) {
+      paths = List<String>.from((json['photoPaths'] as List).whereType<String>());
+    } else if (json['photoPath'] is String && (json['photoPath'] as String).isNotEmpty) {
+      paths = [json['photoPath'] as String];
+    } else {
+      paths = [];
+    }
+    return Note(
+      id: json['id'],
+      date: json['date'],
+      title: json['title'] ?? '',
+      text: json['text'] ?? '',
+      photoPaths: paths,
+      photoComment: json['photoComment'],
+      createdAt: DateTime.parse(json['createdAt']),
+    );
+  }
 }
 
 // Задача (одна строка, чекбокс)

@@ -472,6 +472,7 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: const Text('Мой график'),
         actions: [
+          IconButton(icon: const Icon(Icons.notes), tooltip: 'Все заметки', onPressed: _openNotesPage),
           IconButton(icon: const Icon(Icons.bar_chart), onPressed: _openStats),
           IconButton(icon: const Icon(Icons.settings), onPressed: _openSettings),
         ],
@@ -588,7 +589,24 @@ class _HomeScreenState extends State<HomeScreen> {
       'totalAmount': totalAmount,
     };
   }
-
+  void _openNotesPage() {
+    Navigator.push(context, MaterialPageRoute(
+      builder: (_) => NotesPage(
+        notes: _notes,
+        dateKeyOf: _dateKey,
+        onNotesChanged: (newNotes) async {
+          setState(() => _notes = newNotes);
+          await _saveNotes();
+        },
+        onEditNote: (key, existing) async => await _showNoteDialog(key, existing),
+        onViewNote: (key, note) async => await _showNoteViewDialog(key, note),
+        onDeleteNote: (key, note) async => await _deleteNoteDialog(key, note),
+      ),
+    )).then((_) {
+      // Когда вернулись с NotesPage — синхронизируем _notes на всякий случай
+      if (mounted) setState(() {});
+    });
+  }
   void _openSettings() {
     Navigator.push(context, MaterialPageRoute(
       builder: (context) => SettingsScreen(
@@ -966,13 +984,16 @@ Widget _buildNoteRow(String key, Note note) {
               if (note.title.isNotEmpty) const SizedBox(height: 4),
               ...lines.map((line) => Text(line, style: TextStyle(fontSize: 14, color: _textColor))),
               if (hasMore) Text('…', style: TextStyle(fontSize: 14, color: _subtextColor)),
-              if (note.photoPath != null) ...[
+              if (note.photoPaths.isNotEmpty) ...[
                 const SizedBox(height: 4),
                 Row(
                   children: [
                     Icon(Icons.photo, size: 16, color: _subtextColor),
                     const SizedBox(width: 4),
-                    Text('Фото', style: TextStyle(fontSize: 12, color: _subtextColor)),
+                    Text(
+                      note.photoPaths.length == 1 ? 'Фото' : 'Фото (${note.photoPaths.length})',
+                      style: TextStyle(fontSize: 12, color: _subtextColor),
+                    ),
                   ],
                 ),
               ],
@@ -984,53 +1005,109 @@ Widget _buildNoteRow(String key, Note note) {
   );
 }
 
-void _showNoteViewDialog(String key, Note note) {
-  if (!mounted) return;
-  showDialog(
-    context: context,
-    builder: (dialogContext) => AlertDialog(
-      title: note.title.isNotEmpty
-          ? Text(note.title, style: const TextStyle(fontWeight: FontWeight.bold))
-          : const Text('Заметка'),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(note.text, style: TextStyle(fontSize: 14, color: _textColor)),
-            if (note.photoPath != null) ...[
-              const SizedBox(height: 12),
-              Image.file(File(note.photoPath!), height: 200, fit: BoxFit.cover),
+  Future<void> _showNoteViewDialog(String key, Note note) async {
+    if (!mounted) return;
+    await showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: note.title.isNotEmpty
+            ? Text(note.title, style: const TextStyle(fontWeight: FontWeight.bold))
+            : const Text('Заметка'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (note.text.isNotEmpty)
+                Text(note.text, style: TextStyle(fontSize: 14, color: _textColor)),
+              if (note.photoPaths.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                ...note.photoPaths.asMap().entries.map((e) => Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: GestureDetector(
+                    onTap: () => _showFullScreenPhoto(e.value),
+                    child: Image.file(
+                      File(e.value),
+                      height: 200,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => Container(
+                        height: 60,
+                        alignment: Alignment.center,
+                        child: Text('Фото ${e.key + 1} недоступно',
+                            style: TextStyle(fontSize: 12, color: _subtextColor)),
+                      ),
+                    ),
+                  ),
+                )),
+              ],
             ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              _deleteNoteDialog(key, note);
+            },
+            child: const Text('Удалить', style: TextStyle(color: Colors.red)),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(dialogContext);
+              _showNoteDialog(key, note);
+            },
+            child: const Text('Редактировать'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Закрыть'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showFullScreenPhoto(String path) {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.black,
+        insetPadding: const EdgeInsets.all(8),
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: InteractiveViewer(
+                minScale: 1.0,
+                maxScale: 4.0,
+                child: Center(
+                  child: Image.file(
+                    File(path),
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) => const Icon(
+                      Icons.broken_image,
+                      color: Colors.white,
+                      size: 64,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              top: 4, right: 4,
+              child: IconButton(
+                icon: const Icon(Icons.close, color: Colors.white, size: 28),
+                onPressed: () => Navigator.pop(ctx),
+              ),
+            ),
           ],
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () {
-            Navigator.pop(dialogContext);
-            _deleteNoteDialog(key, note);
-          },
-          child: const Text('Удалить', style: TextStyle(color: Colors.red)),
-        ),
-        TextButton(
-          onPressed: () {
-            Navigator.pop(dialogContext);
-            _showNoteDialog(key, note);
-          },
-          child: const Text('Редактировать'),
-        ),
-        TextButton(
-          onPressed: () => Navigator.pop(dialogContext),
-          child: const Text('Закрыть'),
-        ),
-      ],
-    ),
-  );
-}
+    );
+  }
   
-  void _deleteNoteDialog(String key, Note note) {
-    showDialog(
+  Future<void> _deleteNoteDialog(String key, Note note) async {
+    await showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Удалить заметку?'),
@@ -1038,12 +1115,19 @@ void _showNoteViewDialog(String key, Note note) {
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
           TextButton(
             onPressed: () async {
+              // Удаляем все файлы фото с диска (не критично, если не существует)
+              for (final p in note.photoPaths) {
+                try {
+                  final f = File(p);
+                  if (await f.exists()) await f.delete();
+                } catch (_) {}
+              }
               setState(() {
                 _notes[key]?.removeWhere((n) => n.id == note.id);
                 if (_notes[key]?.isEmpty == true) _notes.remove(key);
               });
               await _saveNotes();
-              Navigator.pop(context);
+              if (context.mounted) Navigator.pop(context);
             },
             child: const Text('Удалить', style: TextStyle(color: Colors.red)),
           ),
@@ -1052,43 +1136,113 @@ void _showNoteViewDialog(String key, Note note) {
     );
   }
 
-  void _showNoteDialog(String key, Note? existing) {
+  Future<void> _showNoteDialog(String key, Note? existing) async {
     final titleController = TextEditingController(text: existing?.title ?? '');
     final textController = TextEditingController(text: existing?.text ?? '');
-    String? photoPath = existing?.photoPath;
-        bool processingPhoto = false;
-    
-    showDialog(
+    final List<String> photoPaths = List<String>.from(existing?.photoPaths ?? []);
+    bool processingPhoto = false;
+    int processingCurrent = 0;
+    int processingTotal = 0;
+
+    await showDialog(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setDialogState) {
-          Future<void> pickPhoto() async {
-           final picker = ImagePicker();
-           final picked = await picker.pickImage(source: ImageSource.gallery);
-           if (picked == null) return;
+          Future<void> pickPhoto(ImageSource source) async {
+            final picker = ImagePicker();
+            final picked = await picker.pickImage(source: source);
+            if (picked == null) return;
 
-           final dir = await getApplicationDocumentsDirectory();
-           final targetPath = '${dir.path}/photo_${DateTime.now().millisecondsSinceEpoch}.jpg';
+            final dir = await getApplicationDocumentsDirectory();
+            final targetPath = '${dir.path}/photo_${DateTime.now().millisecondsSinceEpoch}.jpg';
 
-           setDialogState(() => processingPhoto = true);
-           try {
-            final compressedBytes = await compute(_compressImageInIsolate, {
-             'path': picked.path,
-             'quality': 70,
-            });
+            setDialogState(() => processingPhoto = true);
+            try {
+              final compressedBytes = await compute(_compressImageInIsolate, {
+                'path': picked.path,
+                'quality': 70,
+              });
 
-            if (compressedBytes != null) {
-              await File(targetPath).writeAsBytes(compressedBytes);
+              if (compressedBytes != null) {
+                await File(targetPath).writeAsBytes(compressedBytes);
+                if (context.mounted) {
+                  setDialogState(() => photoPaths.add(targetPath));
+                }
+              }
+            } finally {
               if (context.mounted) {
-                setDialogState(() => photoPath = targetPath);
+                setDialogState(() => processingPhoto = false);
               }
             }
-          } finally {
-            if (context.mounted) {
-              setDialogState(() => processingPhoto = false);
+          }
+          Future<void> pickMultiplePhotos() async {
+            final picker = ImagePicker();
+            final picked = await picker.pickMultiImage();
+            if (picked.isEmpty) return;
+
+            final toProcess = picked;
+
+            setDialogState(() {
+              processingPhoto = true;
+              processingCurrent = 0;
+              processingTotal = toProcess.length;
+            });
+            try {
+              final dir = await getApplicationDocumentsDirectory();
+              for (int i = 0; i < toProcess.length; i++) {
+                final file = toProcess[i];
+                if (!context.mounted) break;
+                setDialogState(() => processingCurrent = i + 1);
+
+                final targetPath = '${dir.path}/photo_${DateTime.now().microsecondsSinceEpoch}_$i.jpg';
+                final compressedBytes = await compute(_compressImageInIsolate, {
+                  'path': file.path,
+                  'quality': 70,
+                });
+                if (compressedBytes != null) {
+                  await File(targetPath).writeAsBytes(compressedBytes);
+                  if (context.mounted) {
+                    setDialogState(() => photoPaths.add(targetPath));
+                  }
+                }
+              }
+            } finally {
+              if (context.mounted) {
+                setDialogState(() {
+                  processingPhoto = false;
+                  processingCurrent = 0;
+                  processingTotal = 0;
+                });
+              }
             }
           }
-        }
+          Future<void> showSourcePicker() async {
+            final action = await showModalBottomSheet<String>(
+              context: context,
+              builder: (ctx) => SafeArea(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ListTile(
+                      leading: const Icon(Icons.photo_library),
+                      title: const Text('Галерея'),
+                      onTap: () => Navigator.pop(ctx, 'gallery'),
+                    ),
+                    ListTile(
+                      leading: const Icon(Icons.photo_camera),
+                      title: const Text('Камера'),
+                      onTap: () => Navigator.pop(ctx, 'camera'),
+                    ),
+                  ],
+                ),
+              ),
+            );
+            if (action == 'gallery') {
+              await pickMultiplePhotos();
+            } else if (action == 'camera') {
+              await pickPhoto(ImageSource.camera);
+            }
+          }
 
           return AlertDialog(
             title: Text(existing == null ? 'Новая заметка' : 'Редактировать заметку'),
@@ -1117,38 +1271,76 @@ void _showNoteViewDialog(String key, Note note) {
                             child: CircularProgressIndicator(strokeWidth: 2),
                           ),
                           const SizedBox(width: 8),
-                          Text('Обработка фото…', style: TextStyle(fontSize: 13, color: _subtextColor)),
+                          Text(
+                            processingTotal > 1
+                                ? 'Обработка фото $processingCurrent/$processingTotal'
+                                : 'Обработка фото…',
+                            style: TextStyle(fontSize: 13, color: _subtextColor),
+                          ),
                         ],
                       ),
-                    )
-                  else if (photoPath == null)
-                    TextButton.icon(
-                      onPressed: pickPhoto,
-                      icon: const Icon(Icons.photo, size: 18),
-                      label: const Text('Добавить фото'),
-                    )
-                  else ...[
-                    Stack(
-                      alignment: Alignment.topRight,
-                      children: [
-                        Image.file(File(photoPath!), height: 120, fit: BoxFit.cover),
-                        IconButton(
-                          icon: const Icon(Icons.close, color: Colors.red),
-                          onPressed: () => setDialogState(() => photoPath = null),
-                        ),
-                      ],
                     ),
-                  ],
+                  if (photoPaths.isNotEmpty)
+                    SizedBox(
+                      height: 100,
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: photoPaths.length,
+                        separatorBuilder: (_, __) => const SizedBox(width: 8),
+                        itemBuilder: (ctx, i) => Stack(
+                          alignment: Alignment.topRight,
+                          children: [
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(8),
+                              child: Image.file(
+                                File(photoPaths[i]),
+                                width: 100, height: 100, fit: BoxFit.cover,
+                                errorBuilder: (_, __, ___) => Container(
+                                  width: 100, height: 100,
+                                  color: Colors.grey.shade400,
+                                  child: const Icon(Icons.broken_image, color: Colors.white),
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(),
+                              icon: const Icon(Icons.close, color: Colors.red, size: 18),
+                              onPressed: () => setDialogState(() => photoPaths.removeAt(i)),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  if (!processingPhoto)
+                    TextButton.icon(
+                      onPressed: showSourcePicker,
+                      icon: const Icon(Icons.add_a_photo, size: 18),
+                      label: Text(photoPaths.isEmpty ? 'Добавить фото' : 'Добавить ещё'),
+                    ),
                 ],
               ),
             ),
             actions: [
               TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
               TextButton(
-                onPressed: (processingPhoto || (textController.text.trim().isEmpty && photoPath == null))
+                onPressed: (processingPhoto || (textController.text.trim().isEmpty && photoPaths.isEmpty))
                     ? null
                     : () async {
                   final text = textController.text.trim();
+
+                  // Удаляем с диска фото, которые были в заметке, но убраны пользователем
+                  if (existing != null) {
+                    for (final oldPath in existing.photoPaths) {
+                      if (!photoPaths.contains(oldPath)) {
+                        try {
+                          final f = File(oldPath);
+                          if (await f.exists()) await f.delete();
+                        } catch (_) {}
+                      }
+                    }
+                  }
+
                   setState(() {
                     final list = _notes[key] ?? [];
                     if (existing == null) {
@@ -1157,7 +1349,7 @@ void _showNoteViewDialog(String key, Note note) {
                         date: key,
                         title: titleController.text.trim(),
                         text: text,
-                        photoPath: photoPath,
+                        photoPaths: List<String>.from(photoPaths),
                         photoComment: null,
                         createdAt: DateTime.now(),
                       ));
@@ -1169,7 +1361,7 @@ void _showNoteViewDialog(String key, Note note) {
                           date: existing.date,
                           title: titleController.text.trim(),
                           text: text,
-                          photoPath: photoPath,
+                          photoPaths: List<String>.from(photoPaths),
                           photoComment: null,
                           createdAt: existing.createdAt,
                         );
@@ -1463,7 +1655,211 @@ void _showNoteViewDialog(String key, Note note) {
     return rateValue;
   }
 }
+class NotesPage extends StatefulWidget {
+  final Map<String, List<Note>> notes;
+  final Future<void> Function(Map<String, List<Note>>) onNotesChanged;
+  final Future<void> Function(String dateKey, Note? existing) onEditNote;
+  final Future<void> Function(String dateKey, Note note) onViewNote;
+  final Future<void> Function(String dateKey, Note note) onDeleteNote;
+  final String Function(DateTime) dateKeyOf;
 
+  const NotesPage({
+    super.key,
+    required this.notes,
+    required this.onNotesChanged,
+    required this.onEditNote,
+    required this.onViewNote,
+    required this.onDeleteNote,
+    required this.dateKeyOf,
+  });
+
+  @override
+  State<NotesPage> createState() => _NotesPageState();
+}
+
+class _NotesPageState extends State<NotesPage> {
+  late Map<String, List<Note>> _notes;
+  String _query = '';
+  final TextEditingController _searchController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _notes = Map<String, List<Note>>.from(widget.notes);
+  }
+
+  List<MapEntry<String, Note>> _flatSorted() {
+    final entries = <MapEntry<String, Note>>[];
+    _notes.forEach((dateKey, list) {
+      for (final n in list) {
+        entries.add(MapEntry(dateKey, n));
+      }
+    });
+    entries.sort((a, b) {
+      final cmp = b.key.compareTo(a.key); // дата по убыванию
+      if (cmp != 0) return cmp;
+      return b.value.createdAt.compareTo(a.value.createdAt);
+    });
+    return entries;
+  }
+
+  List<MapEntry<String, Note>> _filtered() {
+    final q = _query.trim().toLowerCase();
+    if (q.isEmpty) return _flatSorted();
+    return _flatSorted().where((e) {
+      final n = e.value;
+      return n.title.toLowerCase().contains(q) || n.text.toLowerCase().contains(q);
+    }).toList();
+  }
+
+  String _formatDate(String key) {
+    final parts = key.split('-');
+    if (parts.length != 3) return key;
+    final d = DateTime(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
+    const months = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+    const weekdays = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'];
+    return '${d.day} ${months[d.month - 1]} ${d.year}, ${weekdays[d.weekday - 1]}';
+  }
+
+  Future<void> _pickDateAndAdd() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: DateTime.now(),
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2030),
+    );
+    if (picked == null) return;
+    final key = widget.dateKeyOf(picked);
+    await widget.onEditNote(key, null);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _onDelete(String key, Note note) async {
+    await widget.onDeleteNote(key, note);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _onView(String key, Note note) async {
+    await widget.onViewNote(key, note);
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final textColor = isDark ? const Color(0xFFE0E0E0) : Colors.black;
+    final subtextColor = isDark ? const Color(0xFF9E9E9E) : Colors.grey.shade700;
+    final items = _filtered();
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Все заметки'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.add),
+            tooltip: 'Добавить заметку на дату',
+            onPressed: _pickDateAndAdd,
+          ),
+        ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(56),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: TextField(
+              controller: _searchController,
+              style: TextStyle(color: textColor),
+              decoration: InputDecoration(
+                hintText: 'Поиск по заголовку и тексту',
+                hintStyle: TextStyle(color: subtextColor),
+                prefixIcon: Icon(Icons.search, color: subtextColor),
+                suffixIcon: _query.isEmpty
+                    ? null
+                    : IconButton(
+                        icon: Icon(Icons.clear, color: subtextColor),
+                        onPressed: () {
+                          _searchController.clear();
+                          setState(() => _query = '');
+                        },
+                      ),
+                isDense: true,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              onChanged: (v) => setState(() => _query = v),
+            ),
+          ),
+        ),
+      ),
+      body: items.isEmpty
+          ? Center(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Text(
+                  _query.isEmpty ? 'Заметок пока нет' : 'Ничего не найдено',
+                  style: TextStyle(color: subtextColor, fontSize: 16),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            )
+          : ListView.builder(
+              padding: const EdgeInsets.all(8),
+              itemCount: items.length,
+              itemBuilder: (context, index) {
+                final e = items[index];
+                final note = e.value;
+                return Card(
+                  margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
+                  child: ListTile(
+                    title: Text(
+                      note.title.isNotEmpty ? note.title : (note.text.isNotEmpty ? note.text.split('\n').first : '(без текста)'),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: textColor, fontWeight: FontWeight.bold),
+                    ),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(_formatDate(e.key), style: TextStyle(color: subtextColor, fontSize: 12)),
+                        if (note.text.isNotEmpty)
+                          Text(
+                            note.text,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(color: textColor, fontSize: 13),
+                          ),
+                        if (note.photoPaths.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Row(
+                              children: [
+                                Icon(Icons.photo, size: 14, color: subtextColor),
+                                const SizedBox(width: 4),
+                                Text(
+                                  note.photoPaths.length == 1 ? 'Фото' : 'Фото (${note.photoPaths.length})',
+                                  style: TextStyle(color: subtextColor, fontSize: 12),
+                                ),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.delete_outline, color: Colors.red),
+                      onPressed: () => _onDelete(e.key, note),
+                    ),
+                    onTap: () => _onView(e.key, note),
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
 class StatsScreen extends StatefulWidget {
   final int initialYear;
   final int initialMonth;
