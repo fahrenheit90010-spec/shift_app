@@ -30,6 +30,15 @@ Future<Uint8List?> _compressImageInIsolate(Map<String, dynamic> params) async {
   final jpeg = img.encodeJpg(resized, quality: params['quality'] as int);
   return Uint8List.fromList(jpeg);
 }
+
+String _formatHoursMinutes(double hours) {
+  final totalMinutes = (hours * 60).round();
+  final h = totalMinutes ~/ 60;
+  final m = totalMinutes % 60;
+  if (m == 0) return '$h ч';
+  return '$h ч $m мин';
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initializeDateFormatting('ru_RU', null);
@@ -1690,7 +1699,7 @@ Widget _buildNoteRow(String key, Note note) {
                 ),
               ),
               const SizedBox(width: 12),
-              Text('${shift.actualHours.toStringAsFixed(1)} ч', style: TextStyle(fontSize: 14, color: _subtextColor)),
+              Text(_formatHoursMinutes(shift.actualHours), style: TextStyle(fontSize: 14, color: _subtextColor)),
             ],
           ),
           const SizedBox(height: 4),
@@ -1733,7 +1742,7 @@ Widget _buildNoteRow(String key, Note note) {
         ? '${shift.endTime.day.toString().padLeft(2, '0')}.${shift.endTime.month.toString().padLeft(2, '0')}'
         : '${shift.startTime.day.toString().padLeft(2, '0')}.${shift.startTime.month.toString().padLeft(2, '0')}';
     final title = isStart ? 'Поменять дату начала?' : 'Поменять дату конца?';
-    final body = '${newDuration.toStringAsFixed(1)} ч. '
+    final body = '${_formatHoursMinutes(newDuration)}. '
         '${isStart ? "Дата начала" : "Дата конца"} — $dateStr?';
 
     if (!mounted) return;
@@ -1835,6 +1844,134 @@ Widget _buildNoteRow(String key, Note note) {
     setState(() {});
     await _saveShifts();
   }
+
+  bool _isBreakInsideShift(BreakInterval b, ShiftEntry shift) {
+    final totalMinutes = shift.endTime.difference(shift.startTime).inMinutes;
+    final total = totalMinutes == 0 ? 24 * 60 : totalMinutes;
+    final shiftStart = shift.startTime.hour * 60 + shift.startTime.minute;
+    final shiftEnd = shiftStart + total;
+    return b.startMinutes >= shiftStart && b.endMinutes <= shiftEnd;
+  }
+
+  bool _breaksEqual(List<BreakInterval> a, List<BreakInterval> b) {
+    if (a.length != b.length) return false;
+    for (int i = 0; i < a.length; i++) {
+      if (a[i].id != b[i].id ||
+          a[i].startHour != b[i].startHour ||
+          a[i].startMinute != b[i].startMinute ||
+          a[i].endHour != b[i].endHour ||
+          a[i].endMinute != b[i].endMinute ||
+          a[i].countInSalary != b[i].countInSalary) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  Future<BreakInterval?> _showShiftBreakEditDialog({
+    required BreakInterval? existing,
+    required ShiftEntry shift,
+    required List<BreakInterval> currentBreaks,
+  }) async {
+    final nameController = TextEditingController(text: existing?.name ?? '');
+    int startH = existing?.startHour ?? 12;
+    int startM = existing?.startMinute ?? 0;
+    int endH = existing?.endHour ?? 13;
+    int endM = existing?.endMinute ?? 0;
+    bool count = existing?.countInSalary ?? true;
+    String? error;
+
+    final totalMinutes = shift.endTime.difference(shift.startTime).inMinutes;
+    final total = totalMinutes == 0 ? 24 * 60 : totalMinutes;
+    final shiftStart = shift.startTime.hour * 60 + shift.startTime.minute;
+    final shiftEnd = shiftStart + total;
+
+    return showDialog<BreakInterval>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Text(existing == null ? 'Новый перерыв' : 'Редактировать перерыв'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Название'), onChanged: (_) => setDialogState(() => error = null)),
+                const SizedBox(height: 8),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Начало'),
+                  subtitle: Text('${startH.toString().padLeft(2, '0')}:${startM.toString().padLeft(2, '0')}'),
+                  trailing: const Icon(Icons.access_time),
+                  onTap: () async {
+                    final picked = await showTimePicker(context: context, initialTime: TimeOfDay(hour: startH, minute: startM));
+                    if (picked != null) setDialogState(() { startH = picked.hour; startM = picked.minute; error = null; });
+                  },
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Конец'),
+                  subtitle: Text('${endH.toString().padLeft(2, '0')}:${endM.toString().padLeft(2, '0')}'),
+                  trailing: const Icon(Icons.access_time),
+                  onTap: () async {
+                    final picked = await showTimePicker(context: context, initialTime: TimeOfDay(hour: endH, minute: endM));
+                    if (picked != null) setDialogState(() { endH = picked.hour; endM = picked.minute; error = null; });
+                  },
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Учитывать в зарплате'),
+                  value: count,
+                  onChanged: (v) => setDialogState(() => count = v),
+                ),
+                if (error != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(error!, style: const TextStyle(color: Colors.red, fontSize: 12)),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
+            TextButton(
+              onPressed: nameController.text.trim().isEmpty ? null : () {
+                final name = nameController.text.trim();
+                final bs = startH * 60 + startM;
+                final be = endH * 60 + endM;
+                if (be <= bs) { setDialogState(() => error = 'Конец должен быть позже начала'); return; }
+                if (bs < shiftStart || be > shiftEnd) {
+                  setDialogState(() => error = 'Перерыв должен быть внутри смены (${(shiftStart ~/ 60).toString().padLeft(2, '0')}:${(shiftStart % 60).toString().padLeft(2, '0')}–${(shiftEnd ~/ 60).toString().padLeft(2, '0')}:${(shiftEnd % 60).toString().padLeft(2, '0')})');
+                  return;
+                }
+                for (final other in currentBreaks) {
+                  if (existing != null && other.id == existing.id) continue;
+                  final os = other.startMinutes;
+                  final oe = other.endMinutes;
+                  if (bs < oe && os < be) {
+                    setDialogState(() => error = 'Пересекается с «${other.name}»');
+                    return;
+                  }
+                }
+                final result = BreakInterval(
+                  id: existing?.id ?? 'break_${DateTime.now().microsecondsSinceEpoch}',
+                  name: name,
+                  startHour: startH,
+                  startMinute: startM,
+                  endHour: endH,
+                  endMinute: endM,
+                  countInSalary: count,
+                );
+                Navigator.pop(ctx, result);
+              },
+              child: const Text('Сохранить'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+
   void _showShiftSettings(String key, int index, ShiftEntry shift) {
     final type = _getShiftType(shift.typeId);
     if (type == null) return;
@@ -1844,6 +1981,7 @@ Widget _buildNoteRow(String key, Note note) {
     final coefOverController = TextEditingController(text: (shift.overrideCoefOvertime ?? type.coefOvertime).toString());
     final coefUnderController = TextEditingController(text: (shift.overrideCoefUndertime ?? type.coefUndertime).toString());
     RateType selectedRateType = shift.overrideRateType ?? type.rateType;
+    List<BreakInterval> localBreaks = List<BreakInterval>.from(shift.breaks);
 
     showDialog(
       context: context,
@@ -1885,6 +2023,82 @@ Widget _buildNoteRow(String key, Note note) {
                 TextField(controller: coefOverController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Коэфф. переработки')),
                 const SizedBox(height: 8),
                 TextField(controller: coefUnderController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Коэфф. недоработки')),
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('Перерывы', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey.shade700)),
+                ),
+                const SizedBox(height: 4),
+                if (localBreaks.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Text('Нет перерывов', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+                  )
+                else
+                  ...localBreaks.asMap().entries.map((e) {
+                    final b = e.value;
+                    final s = '${b.startHour.toString().padLeft(2, '0')}:${b.startMinute.toString().padLeft(2, '0')}';
+                    final en = '${b.endHour.toString().padLeft(2, '0')}:${b.endMinute.toString().padLeft(2, '0')}';
+                    final inside = _isBreakInsideShift(b, shift);
+                    return Card(
+                      margin: const EdgeInsets.symmetric(vertical: 2),
+                      child: InkWell(
+                        onTap: () async {
+                          final updated = await _showShiftBreakEditDialog(
+                            existing: b,
+                            shift: shift,
+                            currentBreaks: localBreaks,
+                          );
+                          if (updated != null) {
+                            setDialogState(() {
+                              localBreaks.removeAt(e.key);
+                              localBreaks.add(updated);
+                              localBreaks.sort((a, c) => a.startMinutes.compareTo(c.startMinutes));
+                            });
+                          }
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  '${b.name} $s–$en${inside ? '' : ' (вне смены)'}',
+                                  style: TextStyle(fontSize: 13, color: inside ? null : Colors.grey),
+                                ),
+                              ),
+                              IconButton(
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                                icon: const Icon(Icons.delete, color: Colors.red, size: 18),
+                                onPressed: () => setDialogState(() => localBreaks.removeAt(e.key)),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: () async {
+                      final created = await _showShiftBreakEditDialog(
+                        existing: null,
+                        shift: shift,
+                        currentBreaks: localBreaks,
+                      );
+                      if (created != null) {
+                        setDialogState(() {
+                          localBreaks.add(created);
+                          localBreaks.sort((a, c) => a.startMinutes.compareTo(c.startMinutes));
+                        });
+                      }
+                    },
+                    icon: const Icon(Icons.add, size: 18),
+                    label: const Text('Добавить перерыв'),
+                  ),
+                ),
               ],
             ),
           ),
@@ -1893,6 +2107,11 @@ Widget _buildNoteRow(String key, Note note) {
             TextButton(
               onPressed: () async {
                 final typeChanged = selectedTypeId != shift.typeId;
+                final breaksChanged = !_breaksEqual(shift.breaks, localBreaks);
+                final overridesChanged = shift.overrideRateValue != double.tryParse(rateController.text.trim()) ||
+                    shift.overrideRateType != selectedRateType ||
+                    shift.overrideCoefOvertime != double.tryParse(coefOverController.text.trim()) ||
+                    shift.overrideCoefUndertime != double.tryParse(coefUnderController.text.trim());
                 setState(() {
                   shift.typeId = selectedTypeId;
                   if (typeChanged) {
@@ -1911,16 +2130,25 @@ Widget _buildNoteRow(String key, Note note) {
                     shift.overrideRateType = null;
                     shift.overrideCoefOvertime = null;
                     shift.overrideCoefUndertime = null;
-
+                    shift.breaks = List<BreakInterval>.from(_getShiftType(selectedTypeId)?.breaks ?? []);
+                    shift.overridden = false;
                   } else {
                     shift.overrideRateValue = double.tryParse(rateController.text.trim());
                     shift.overrideRateType = selectedRateType;
                     shift.overrideCoefOvertime = double.tryParse(coefOverController.text.trim());
                     shift.overrideCoefUndertime = double.tryParse(coefUnderController.text.trim());
+                    shift.breaks = List<BreakInterval>.from(localBreaks);
+                    if (breaksChanged || overridesChanged) {
+                      shift.overridden = true;
+                    }
                   }
                 });
                 await _saveShifts();
-                Navigator.pop(context);
+                if (mounted) Navigator.pop(context);
+                // setState главного экрана — вне диалога
+                Future.microtask(() {
+                  if (mounted) setState(() {});
+                });
               },
               child: const Text('Сохранить'),
             ),
@@ -2355,9 +2583,9 @@ class _StatsScreenState extends State<StatsScreen> {
             ),
           const SizedBox(height: 12),
           _buildStatRow('Рабочих смен', '${stats['workShifts']}'),
-          _buildStatRow('Часов', '${(stats['totalHours'] as double).toStringAsFixed(1)}'),
-          _buildStatRow('Переработка', '${(stats['overtime'] as double).toStringAsFixed(1)} ч'),
-          _buildStatRow('Недоработка', '${(stats['undertime'] as double).toStringAsFixed(1)} ч'),
+          _buildStatRow('Часов', _formatHoursMinutes(stats['totalHours'] as double)),
+          _buildStatRow('Переработка', _formatHoursMinutes(stats['overtime'] as double)),
+          _buildStatRow('Недоработка', _formatHoursMinutes(stats['undertime'] as double)),
           _buildStatRow('Больничных', '${stats['sickDays']}'),
           _buildStatRow('Отпуск', '${stats['vacationDays']}'),
           const Divider(height: 32),
@@ -2624,7 +2852,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           child: Center(child: Text(type.letter, style: const TextStyle(fontWeight: FontWeight.bold))),
         ),
         title: Text(type.name),
-        subtitle: Text('$startStr • ${type.plannedHours} ч • ${type.rateValue.toStringAsFixed(0)} ₽ ${type.rateType == RateType.perHour ? "/ч" : "/смена"}'),
+        subtitle: Text('$startStr • ${_formatHoursMinutes(type.plannedHours)} • ${type.rateValue.toStringAsFixed(0)} ₽ ${type.rateType == RateType.perHour ? "/ч" : "/смена"}'),
         trailing: IconButton(icon: const Icon(Icons.edit), onPressed: () => _editShiftType(type)),
       ),
     );
