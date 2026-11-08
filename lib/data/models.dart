@@ -1,16 +1,22 @@
 import 'package:flutter/material.dart';
 
 class Features {
-  static const bool widgets = false;
-  static const bool pdfExport = false;
-  static const bool advancedStats = false;
-  static const bool cloudSync = false;
-  static const bool showMyApps = false;
-  static const bool proSectionVisible = true;
-  static const bool multipleTemplates = true;
-  static const bool customTemplates = true;
-  static const bool categories = true;
-  static const bool photos = true; // Pro: фото в заметках
+  // ЕДИНСТВЕННЫЙ рубильник. true = Pro включён, false = free-версия.
+  static const bool isPro = false;
+
+  // Всё ниже — производное от isPro. Руками не менять.
+  static const bool widgets = isPro;
+  static const bool pdfExport = isPro;
+  static const bool advancedStats = isPro;
+  static const bool cloudSync = isPro;
+  static const bool showMyApps = isPro;
+  static const bool multipleTemplates = isPro;
+  static const bool customTemplates = isPro;
+  static const bool categories = isPro;
+  static const bool photos = isPro;
+
+  // Не Pro-фича: раздел «Pro» в настройках (заглушка «скоро»).
+  static const bool proSectionVisible = false;
 }
 
 class ShiftType {
@@ -110,6 +116,12 @@ class ShiftEntry {
     }
     final result = total - breaksToSubtract;
     return result > 0 ? result / 60.0 : 0;
+  }
+
+  double get totalTimeHours {
+    final totalMinutes = endTime.difference(startTime).inMinutes;
+    final total = totalMinutes == 0 ? 24 * 60 : totalMinutes;
+    return total / 60.0;
   }
 
   Map<String, dynamic> toJson() => {

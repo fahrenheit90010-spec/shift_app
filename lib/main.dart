@@ -296,7 +296,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       workShifts++;
       totalHours += shift.actualHours;
-      final diff = shift.actualHours - type.plannedHours;
+      final diff = shift.totalTimeHours - type.plannedHours;
       if (diff > 0) overtime += diff;
       if (diff < 0) undertime += -diff;
       totalAmount += _calculateAmount(shift, type);
@@ -603,7 +603,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       workShifts++;
       totalHours += shift.actualHours;
-      final diff = shift.actualHours - type.plannedHours;
+      final diff = shift.totalTimeHours - type.plannedHours;
       if (diff > 0) overtime += diff;
       if (diff < 0) undertime += -diff;
       totalAmount += _calculateAmount(shift, type);
@@ -615,6 +615,119 @@ class _HomeScreenState extends State<HomeScreen> {
       'totalAmount': totalAmount,
     };
   }
+
+  int _countShiftsForType(String typeId) {
+    return _shifts.where((s) => s.typeId == typeId).length;
+  }
+
+  int _countClosedShiftsForType(String typeId) {
+    return _shifts.where((s) {
+      if (s.typeId != typeId) return false;
+      final d = _salaryDateFor(s);
+      return _isMonthClosed(d.year, d.month);
+    }).length;
+  }
+
+  int _countOverriddenShiftsForType(String typeId) {
+    return _shifts.where((s) => s.typeId == typeId && s.overridden).length;
+  }
+
+  Future<Map<String, int>> _applyTypeChangesToShifts(ShiftType newType, {required bool includeOverridden}) async {
+    int skippedClosed = 0;
+    int skippedOverridden = 0;
+    final candidates = <ShiftEntry>[];
+
+    for (final shift in _shifts) {
+      if (shift.typeId != newType.id) continue;
+      final d = _salaryDateFor(shift);
+      if (_isMonthClosed(d.year, d.month)) { skippedClosed++; continue; }
+      if (!includeOverridden && shift.overridden) { skippedOverridden++; continue; }
+      candidates.add(shift);
+    }
+
+    if (candidates.isEmpty) {
+      return {'updated': 0, 'skippedClosed': skippedClosed, 'skippedOverridden': skippedOverridden};
+    }
+
+    final oldStates = <Map<String, dynamic>>[];
+    for (final shift in candidates) {
+      oldStates.add({
+        'shift': shift,
+        'startTime': shift.startTime,
+        'endTime': shift.endTime,
+        'breaks': List<BreakInterval>.from(shift.breaks),
+        'overrideRateValue': shift.overrideRateValue,
+        'overrideRateType': shift.overrideRateType,
+        'overrideCoefOvertime': shift.overrideCoefOvertime,
+        'overrideCoefUndertime': shift.overrideCoefUndertime,
+        'overridden': shift.overridden,
+      });
+      final start = DateTime(shift.startTime.year, shift.startTime.month, shift.startTime.day, newType.startHour, newType.startMinute);
+      shift.startTime = start;
+      shift.endTime = start.add(Duration(minutes: (newType.plannedHours * 60).round()));
+      shift.breaks = List<BreakInterval>.from(newType.breaks);
+      shift.overrideRateValue = null;
+      shift.overrideRateType = null;
+      shift.overrideCoefOvertime = null;
+      shift.overrideCoefUndertime = null;
+      shift.overridden = false;
+    }
+
+    final conflictIds = <String>{};
+    for (final shift in candidates) {
+      for (final c in _findAllConflicts(shift)) {
+        if (!candidates.contains(c)) conflictIds.add(c.id);
+      }
+    }
+
+    void rollback() {
+      for (final o in oldStates) {
+        final s = o['shift'] as ShiftEntry;
+        s.startTime = o['startTime'] as DateTime;
+        s.endTime = o['endTime'] as DateTime;
+        s.breaks = List<BreakInterval>.from(o['breaks'] as List);
+        s.overrideRateValue = o['overrideRateValue'] as double?;
+        s.overrideRateType = o['overrideRateType'] as RateType?;
+        s.overrideCoefOvertime = o['overrideCoefOvertime'] as double?;
+        s.overrideCoefUndertime = o['overrideCoefUndertime'] as double?;
+        s.overridden = o['overridden'] as bool;
+      }
+    }
+
+    if (conflictIds.isNotEmpty) {
+      if (!mounted) {
+        rollback();
+        return {'updated': 0, 'skippedClosed': skippedClosed, 'skippedOverridden': skippedOverridden};
+      }
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Конфликты'),
+          content: Text('${conflictIds.length} смен пересекаются с обновлёнными. Заменить их?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+            TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Заменить')),
+          ],
+        ),
+      );
+      if (ok != true) {
+        rollback();
+        setState(() {});
+        return {'updated': 0, 'skippedClosed': skippedClosed, 'skippedOverridden': skippedOverridden};
+      }
+      _shifts.removeWhere((s) => conflictIds.contains(s.id));
+    }
+
+    setState(() {});
+    await _saveShifts();
+
+    return {
+      'updated': candidates.length,
+      'skippedClosed': skippedClosed,
+      'skippedOverridden': skippedOverridden,
+    };
+  }
+
   void _openNotesPage() {
     Navigator.push(context, MaterialPageRoute(
       builder: (_) => NotesPage(
@@ -653,6 +766,10 @@ class _HomeScreenState extends State<HomeScreen> {
           await _saveGlobalSettings();
         },
         onClearAllData: _clearAllData,
+        countShiftsForType: _countShiftsForType,
+        countClosedShiftsForType: _countClosedShiftsForType,
+        countOverriddenShiftsForType: _countOverriddenShiftsForType,
+        applyTypeChangesToShifts: _applyTypeChangesToShifts,
       ),
     ));
   }
@@ -1326,9 +1443,9 @@ Widget _buildNoteRow(String key, Note note) {
               }
             }
           }
-          Future<void> pickMultiplePhotos() async {
+          Future<void> pickMultiplePhotos({int? limit}) async {
             final picker = ImagePicker();
-            final picked = await picker.pickMultiImage();
+            final picked = await picker.pickMultiImage(limit: limit);
             if (picked.isEmpty) return;
 
             final toProcess = picked;
@@ -1389,7 +1506,11 @@ Widget _buildNoteRow(String key, Note note) {
               ),
             );
             if (action == 'gallery') {
-              await pickMultiplePhotos();
+              if (Features.photos) {
+                await pickMultiplePhotos();
+              } else {
+                await pickMultiplePhotos(limit: 1);
+              }
             } else if (action == 'camera') {
               await pickPhoto(ImageSource.camera);
             }
@@ -1465,9 +1586,15 @@ Widget _buildNoteRow(String key, Note note) {
                     ),
                   if (!processingPhoto)
                     TextButton.icon(
-                      onPressed: showSourcePicker,
+                      onPressed: (!Features.photos && photoPaths.length >= 3)
+                          ? null
+                          : showSourcePicker,
                       icon: const Icon(Icons.add_a_photo, size: 18),
-                      label: Text(photoPaths.isEmpty ? 'Добавить фото' : 'Добавить ещё'),
+                      label: Text(
+                        (!Features.photos && photoPaths.length >= 3)
+                            ? 'Максимум 3 фото'
+                            : (photoPaths.isEmpty ? 'Добавить фото' : 'Добавить ещё'),
+                      ),
                     ),
                 ],
               ),
@@ -1634,6 +1761,7 @@ Widget _buildNoteRow(String key, Note note) {
                   final oldEnd = shift.endTime;
                   final oldDuration = shift.actualHours;
                   shift.startTime = picked;
+                  shift.overridden = true;
                   if (!shift.endTime.isAfter(shift.startTime)) {
                     shift.endTime = shift.startTime.add(const Duration(hours: 1));
                   }
@@ -1669,6 +1797,7 @@ Widget _buildNoteRow(String key, Note note) {
                   if (picked == null) return;
                   final oldEnd = shift.endTime;
                   final oldDuration = shift.actualHours;
+                  shift.overridden = true;
                   var newEnd = picked;
                   if (!newEnd.isAfter(shift.startTime)) {
                     newEnd = newEnd.add(const Duration(days: 1));
@@ -1825,6 +1954,7 @@ Widget _buildNoteRow(String key, Note note) {
     if (diffDays == 0) return;
     shift.startTime = oldStart.add(Duration(days: diffDays));
     shift.endTime = oldEnd.add(Duration(days: diffDays));
+    shift.overridden = true;
     final conflicts = _findAllConflicts(shift);
     if (conflicts.isNotEmpty) {
       if (!mounted) return;
@@ -2644,6 +2774,10 @@ class SettingsScreen extends StatefulWidget {
   final ValueChanged<List<ShiftTemplate>> onTemplatesChanged;
   final Function(double, double, bool) onGlobalSettingsChanged;
   final Future<void> Function({required bool deleteNotes}) onClearAllData;
+  final int Function(String typeId) countShiftsForType;
+  final int Function(String typeId) countClosedShiftsForType;
+  final int Function(String typeId) countOverriddenShiftsForType;
+  final Future<Map<String, int>> Function(ShiftType newType, {required bool includeOverridden}) applyTypeChangesToShifts;
 
   const SettingsScreen({
     super.key,
@@ -2653,6 +2787,10 @@ class SettingsScreen extends StatefulWidget {
     required this.onThemeChanged, required this.onShiftTypesChanged, required this.onTemplatesChanged,
     required this.onGlobalSettingsChanged,
     required this.onClearAllData,
+    required this.countShiftsForType,
+    required this.countClosedShiftsForType,
+    required this.countOverriddenShiftsForType,
+    required this.applyTypeChangesToShifts,
   });
 
   @override
@@ -2713,10 +2851,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
               title: const Text('Шаблоны смен'),
               children: [
                 ..._templates.map((t) => _buildTemplateTile(t)),
-                Padding(
-                  padding: const EdgeInsets.all(8),
-                  child: ElevatedButton.icon(onPressed: _createCustomTemplate, icon: const Icon(Icons.add), label: const Text('Создать свой шаблон')),
-                ),
+                if (Features.customTemplates)
+                  Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: ElevatedButton.icon(onPressed: _createCustomTemplate, icon: const Icon(Icons.add), label: const Text('Создать свой шаблон')),
+                  ),
               ],
             ),
           ),
@@ -3267,10 +3406,132 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  bool _breaksEqual(List<BreakInterval> a, List<BreakInterval> b) {
+    if (a.length != b.length) return false;
+    for (int i = 0; i < a.length; i++) {
+      if (a[i].id != b[i].id ||
+          a[i].startHour != b[i].startHour ||
+          a[i].startMinute != b[i].startMinute ||
+          a[i].endHour != b[i].endHour ||
+          a[i].endMinute != b[i].endMinute ||
+          a[i].countInSalary != b[i].countInSalary) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool _typeFieldsChanged(ShiftType a, ShiftType b) {
+    if (a.startHour != b.startHour) return true;
+    if (a.startMinute != b.startMinute) return true;
+    if (a.plannedHours != b.plannedHours) return true;
+    if (a.rateValue != b.rateValue) return true;
+    if (a.rateType != b.rateType) return true;
+    if (a.coefOvertime != b.coefOvertime) return true;
+    if (a.coefUndertime != b.coefUndertime) return true;
+    if (!_breaksEqual(a.breaks, b.breaks)) return true;
+    return false;
+  }
+
+  Future<void> _saveShiftTypeWithPrompt(ShiftType? existing, ShiftType newType) async {
+    setState(() {
+      if (existing == null) {
+        _shiftTypes.add(newType);
+      } else {
+        final i = _shiftTypes.indexWhere((t) => t.id == existing.id);
+        if (i >= 0) _shiftTypes[i] = newType;
+      }
+    });
+    widget.onShiftTypesChanged(_shiftTypes);
+
+    if (existing == null) return;
+    if (!_typeFieldsChanged(existing, newType)) return;
+
+    final total = widget.countShiftsForType(newType.id);
+    if (total == 0) return;
+
+    final closed = widget.countClosedShiftsForType(newType.id);
+    final overridden = widget.countOverriddenShiftsForType(newType.id);
+
+    if (!mounted) return;
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (ctx) {
+        String selected = 'C';
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) => AlertDialog(
+            title: const Text('Применить к существующим сменам?'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Найдено $total смен с типом «${newType.name}».'),
+                  if (closed > 0) Text('Из них $closed — в закрытых месяцах (будут пропущены).'),
+                  if (overridden > 0) Text('Из них $overridden — с ручными изменениями.'),
+                  const SizedBox(height: 12),
+                  RadioListTile<String>(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Только стандартные'),
+                    subtitle: overridden > 0 ? Text('$overridden ручных пропустятся') : null,
+                    value: 'A',
+                    groupValue: selected,
+                    onChanged: (v) => setDialogState(() => selected = v ?? 'C'),
+                  ),
+                  RadioListTile<String>(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Все, кроме закрытых месяцев'),
+                    subtitle: overridden > 0 ? const Text('Ручные тоже обновятся') : null,
+                    value: 'B',
+                    groupValue: selected,
+                    onChanged: (v) => setDialogState(() => selected = v ?? 'C'),
+                  ),
+                  RadioListTile<String>(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Не менять'),
+                    subtitle: const Text('Только новые смены получат изменения'),
+                    value: 'C',
+                    groupValue: selected,
+                    onChanged: (v) => setDialogState(() => selected = v ?? 'C'),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx, 'C'), child: const Text('Отмена')),
+              TextButton(onPressed: () => Navigator.pop(ctx, selected), child: const Text('Применить')),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (choice == null || choice == 'C') return;
+    final includeOverridden = choice == 'B';
+
+    final result = await widget.applyTypeChangesToShifts(newType, includeOverridden: includeOverridden);
+    if (!mounted) return;
+    final updated = result['updated'] ?? 0;
+    final skippedClosed = result['skippedClosed'] ?? 0;
+    final skippedOverridden = result['skippedOverridden'] ?? 0;
+    if (updated > 0) {
+      final parts = <String>['Обновлено $updated смен'];
+      if (skippedClosed > 0) parts.add('пропущено $skippedClosed (закрытые)');
+      if (skippedOverridden > 0) parts.add('$skippedOverridden (ручные)');
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(parts.join(', '))));
+    }
+  }
+
+  double _calculatePlannedHours(int startHour, int startMinute, int endHour, int endMinute) {
+    final start = startHour * 60 + startMinute;
+    var end = endHour * 60 + endMinute;
+    if (end <= start) end += 24 * 60;
+    return (end - start) / 60.0;
+  }
+
   void _showShiftTypeDialog(ShiftType? existing) {
     final nameController = TextEditingController(text: existing?.name ?? '');
     final letterController = TextEditingController(text: existing?.letter ?? '');
-    final hoursController = TextEditingController(text: (existing?.plannedHours ?? 8).toStringAsFixed(0));
     final rateController = TextEditingController(text: (existing?.rateValue ?? 0).toStringAsFixed(0));
     final coefOverController = TextEditingController(text: (existing?.coefOvertime ?? 1.0).toString());
     final coefUnderController = TextEditingController(text: (existing?.coefUndertime ?? 1.0).toString());
@@ -3279,6 +3540,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     Color selectedColor = existing?.color ?? const Color(0xFF90CAF9);
     int startHour = existing?.startHour ?? 8;
     int startMinute = existing?.startMinute ?? 0;
+    final initialEnd = DateTime(2020, 1, 1, startHour, startMinute).add(
+      Duration(minutes: ((existing?.plannedHours ?? 8) * 60).round()),
+    );
+    int endHour = initialEnd.hour;
+    int endMinute = initialEnd.minute;
     List<BreakInterval> breaks = List<BreakInterval>.from(existing?.breaks ?? []);
 
     showDialog(
@@ -3293,7 +3559,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Название'), onChanged: (_) => setDialogState(() {})),
                 const SizedBox(height: 8),
                 TextField(controller: letterController, maxLength: 1, decoration: const InputDecoration(labelText: 'Буква')),
-                TextField(controller: hoursController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Плановые часы')),
                 const SizedBox(height: 8),
                 ListTile(
                   contentPadding: EdgeInsets.zero,
@@ -3309,6 +3574,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       setDialogState(() {
                         startHour = picked.hour;
                         startMinute = picked.minute;
+                      });
+                    }
+                  },
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Время конца'),
+                  subtitle: Text('${endHour.toString().padLeft(2, '0')}:${endMinute.toString().padLeft(2, '0')}'),
+                  trailing: const Icon(Icons.access_time),
+                  onTap: () async {
+                    final picked = await showTimePicker(
+                      context: context,
+                      initialTime: TimeOfDay(hour: endHour, minute: endMinute),
+                    );
+                    if (picked != null) {
+                      setDialogState(() {
+                        endHour = picked.hour;
+                        endMinute = picked.minute;
                       });
                     }
                   },
@@ -3351,7 +3634,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             existing: b,
                             typeStartHour: startHour,
                             typeStartMinute: startMinute,
-                            typePlannedHours: double.tryParse(hoursController.text) ?? 0,
+                            typePlannedHours: _calculatePlannedHours(startHour, startMinute, endHour, endMinute),
                             currentBreaks: breaks,
                           );
                           if (updated != null) {
@@ -3389,7 +3672,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         existing: null,
                         typeStartHour: startHour,
                         typeStartMinute: startMinute,
-                        typePlannedHours: double.tryParse(hoursController.text) ?? 0,
+                        typePlannedHours: _calculatePlannedHours(startHour, startMinute, endHour, endMinute),
                         currentBreaks: breaks,
                       );
                       if (created != null) {
@@ -3457,14 +3740,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
           actions: [
             TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
             TextButton(
-              onPressed: nameController.text.trim().isEmpty ? null : () {
+              onPressed: nameController.text.trim().isEmpty ? null : () async {
                 final name = nameController.text.trim();
                 final newType = ShiftType(
                   id: existing?.id ?? 'type_${DateTime.now().millisecondsSinceEpoch}',
                   name: name,
                   letter: letterController.text.trim().isNotEmpty ? letterController.text.trim()[0] : name[0],
                   color: selectedColor,
-                  plannedHours: double.tryParse(hoursController.text) ?? 0,
+                  plannedHours: _calculatePlannedHours(startHour, startMinute, endHour, endMinute),
                   countInSalary: countInSalary,
                   rateValue: double.tryParse(rateController.text) ?? 0,
                   rateType: selectedRateType,
@@ -3474,12 +3757,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   startMinute: startMinute,
                   breaks: List<BreakInterval>.from(breaks),
                 );
-                setState(() {
-                  if (existing == null) { _shiftTypes.add(newType); }
-                  else { final i = _shiftTypes.indexWhere((t) => t.id == existing.id); if (i >= 0) _shiftTypes[i] = newType; }
-                });
-                widget.onShiftTypesChanged(_shiftTypes);
                 Navigator.pop(context);
+                await _saveShiftTypeWithPrompt(existing, newType);
               },
               child: const Text('Сохранить'),
             ),
