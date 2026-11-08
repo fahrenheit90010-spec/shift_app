@@ -11,6 +11,7 @@ import 'dart:convert';
 import 'data/models.dart';
 import 'data/holiday_loader.dart';
 import 'package:image/image.dart' as img;
+import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'dart:typed_data';
 /// Сжимает изображение в отдельном изоляте (не блокирует UI).
 /// Возвращает JPEG-байты или null, если декодировать не удалось.
@@ -324,6 +325,41 @@ class _HomeScreenState extends State<HomeScreen> {
         .fold<int>(0, (sum, e) => sum + e.value.length);
   }
 
+  Future<void> _clearAllData({required bool deleteNotes}) async {
+    if (deleteNotes) {
+      for (final list in _notes.values) {
+        for (final n in list) {
+          for (final p in n.photoPaths) {
+            try {
+              final f = File(p);
+              if (await f.exists()) await f.delete();
+            } catch (_) {}
+          }
+        }
+      }
+    }
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('shifts');
+    await prefs.remove('closed_months');
+    await prefs.remove('coef_overtime');
+    await prefs.remove('coef_undertime');
+    await prefs.remove('salary_from_start');
+    if (deleteNotes) {
+      await prefs.remove('notes');
+    }
+
+    setState(() {
+      _shifts.clear();
+      _closedMonths.clear();
+      if (deleteNotes) _notes.clear();
+      _globalCoefOvertime = 1.0;
+      _globalCoefUndertime = 1.0;
+      _salaryFromStart = true;
+      _selectedDay = null;
+    });
+  }
+
   Future<void> _clearMonth(int year, int month, bool deleteNotes) async {
     final toRemoveShifts = _shifts.where((s) {
       final d = _salaryDateFor(s);
@@ -606,6 +642,7 @@ class _HomeScreenState extends State<HomeScreen> {
           });
           await _saveGlobalSettings();
         },
+        onClearAllData: _clearAllData,
       ),
     ));
   }
@@ -854,11 +891,12 @@ class _HomeScreenState extends State<HomeScreen> {
     final overlapping = _shifts.where((s) =>
         s.startTime.isBefore(dayEnd) && dayStart.isBefore(s.endTime)).toList();
 
-    // Смены, которые НАЧАЛИСЬ в этот день
+    // Смены, которые НАЧАЛИСЬ в этот день (отсортированы по времени начала)
     final startedHere = overlapping.where((s) =>
         s.startTime.year == day.year &&
         s.startTime.month == day.month &&
-        s.startTime.day == day.day).toList();
+        s.startTime.day == day.day).toList()
+      ..sort((a, b) => a.startTime.compareTo(b.startTime));
 
     // Смены-продолжения (не начались здесь, но пересекают)
     final continuations = overlapping.where((s) =>
@@ -949,6 +987,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final dayEnd = dayStart.add(const Duration(days: 1));
     final shifts = _shifts.where((s) =>
         s.startTime.isBefore(dayEnd) && dayStart.isBefore(s.endTime)).toList();
+    shifts.sort((a, b) => a.startTime.compareTo(b.startTime));
     if (shifts.isEmpty) return _buildShiftPicker();
     return _buildShiftCardList(key, shifts);
   }
@@ -1799,11 +1838,12 @@ Widget _buildNoteRow(String key, Note note) {
     final type = _getShiftType(shift.typeId);
     if (type == null) return;
 
+    String selectedTypeId = shift.typeId;
     final rateController = TextEditingController(text: (shift.overrideRateValue ?? type.rateValue).toStringAsFixed(0));
     final coefOverController = TextEditingController(text: (shift.overrideCoefOvertime ?? type.coefOvertime).toString());
     final coefUnderController = TextEditingController(text: (shift.overrideCoefUndertime ?? type.coefUndertime).toString());
     final breakController = TextEditingController(text: shift.breakMinutes.toString());
-    RateType selectedType = shift.overrideRateType ?? type.rateType;
+    RateType selectedRateType = shift.overrideRateType ?? type.rateType;
 
     showDialog(
       context: context,
@@ -1814,13 +1854,32 @@ Widget _buildNoteRow(String key, Note note) {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                DropdownButtonFormField<String>(
+                  value: selectedTypeId,
+                  decoration: const InputDecoration(labelText: 'Тип смены'),
+                  items: _shiftTypes.map((t) => DropdownMenuItem(value: t.id, child: Text(t.name))).toList(),
+                  onChanged: (value) {
+                    if (value == null || value == selectedTypeId) return;
+                    setDialogState(() {
+                      selectedTypeId = value;
+                      final newType = _getShiftType(value);
+                      if (newType != null) {
+                        rateController.text = newType.rateValue.toStringAsFixed(0);
+                        coefOverController.text = newType.coefOvertime.toString();
+                        coefUnderController.text = newType.coefUndertime.toString();
+                        selectedRateType = newType.rateType;
+                      }
+                    });
+                  },
+                ),
+                const SizedBox(height: 8),
                 TextField(controller: rateController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Ставка')),
                 const SizedBox(height: 8),
                 DropdownButtonFormField<RateType>(
-                  value: selectedType,
+                  value: selectedRateType,
                   decoration: const InputDecoration(labelText: 'Тип расчёта'),
                   items: RateType.values.map((t) => DropdownMenuItem(value: t, child: Text(t == RateType.perHour ? 'за час' : 'за смену'))).toList(),
-                  onChanged: (value) { if (value != null) setDialogState(() => selectedType = value); },
+                  onChanged: (value) { if (value != null) setDialogState(() => selectedRateType = value); },
                 ),
                 const SizedBox(height: 8),
                 TextField(controller: coefOverController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Коэфф. переработки')),
@@ -1835,12 +1894,33 @@ Widget _buildNoteRow(String key, Note note) {
             TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
             TextButton(
               onPressed: () async {
+                final typeChanged = selectedTypeId != shift.typeId;
                 setState(() {
-                  shift.overrideRateValue = double.tryParse(rateController.text.trim());
-                  shift.overrideRateType = selectedType;
-                  shift.overrideCoefOvertime = double.tryParse(coefOverController.text.trim());
-                  shift.overrideCoefUndertime = double.tryParse(coefUnderController.text.trim());
-                  shift.breakMinutes = int.tryParse(breakController.text.trim()) ?? 0;
+                  shift.typeId = selectedTypeId;
+                  if (typeChanged) {
+                    final newType = _getShiftType(selectedTypeId);
+                    if (newType != null) {
+                      final oldStart = shift.startTime;
+                      shift.startTime = DateTime(
+                        oldStart.year, oldStart.month, oldStart.day,
+                        newType.startHour, newType.startMinute,
+                      );
+                      shift.endTime = shift.startTime.add(
+                        Duration(minutes: (newType.plannedHours * 60).round()),
+                      );
+                    }
+                    shift.overrideRateValue = null;
+                    shift.overrideRateType = null;
+                    shift.overrideCoefOvertime = null;
+                    shift.overrideCoefUndertime = null;
+                    shift.breakMinutes = int.tryParse(breakController.text.trim()) ?? 0;
+                  } else {
+                    shift.overrideRateValue = double.tryParse(rateController.text.trim());
+                    shift.overrideRateType = selectedRateType;
+                    shift.overrideCoefOvertime = double.tryParse(coefOverController.text.trim());
+                    shift.overrideCoefUndertime = double.tryParse(coefUnderController.text.trim());
+                    shift.breakMinutes = int.tryParse(breakController.text.trim()) ?? 0;
+                  }
                 });
                 await _saveShifts();
                 Navigator.pop(context);
@@ -2338,6 +2418,7 @@ class SettingsScreen extends StatefulWidget {
   final ValueChanged<List<ShiftType>> onShiftTypesChanged;
   final ValueChanged<List<ShiftTemplate>> onTemplatesChanged;
   final Function(double, double, bool) onGlobalSettingsChanged;
+  final Future<void> Function({required bool deleteNotes}) onClearAllData;
 
   const SettingsScreen({
     super.key,
@@ -2346,6 +2427,7 @@ class SettingsScreen extends StatefulWidget {
     required this.salaryFromStart,
     required this.onThemeChanged, required this.onShiftTypesChanged, required this.onTemplatesChanged,
     required this.onGlobalSettingsChanged,
+    required this.onClearAllData,
   });
 
   @override
@@ -2449,6 +2531,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
             ),
           ),
+          const SizedBox(height: 24),
+          Card(
+            color: Colors.red.shade50,
+            child: Padding(
+              padding: const EdgeInsets.all(8),
+              child: TextButton.icon(
+                onPressed: _confirmClearAll,
+                icon: const Icon(Icons.delete_forever, color: Colors.red),
+                label: const Text('Очистить все данные', style: TextStyle(color: Colors.red)),
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -2462,6 +2556,53 @@ class _SettingsScreenState extends State<SettingsScreen> {
         return 'Тёмная';
       case ThemeMode.system:
         return 'Системная';
+    }
+  }
+
+  Future<void> _confirmClearAll() async {
+    final continueToNotes = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Очистить все данные?'),
+        content: const Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Будут удалены:'),
+            SizedBox(height: 8),
+            Text('• Все смены'),
+            Text('• Закрытые месяцы'),
+            Text('• Настройки коэффициентов'),
+            SizedBox(height: 12),
+            Text('Типы смен, шаблоны и тема сохранятся.'),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Продолжить')),
+        ],
+      ),
+    );
+    if (continueToNotes != true) return;
+
+    final deleteNotes = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Удалить заметки?'),
+        content: const Text('Заметки (и фото к ним) тоже будут удалены. Удалить их?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Сохранить заметки')),
+          TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Удалить заметки', style: TextStyle(color: Colors.red))),
+        ],
+      ),
+    );
+    if (deleteNotes == null) return;
+
+    await widget.onClearAllData(deleteNotes: deleteNotes);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Данные очищены')),
+      );
     }
   }
 
@@ -2857,22 +2998,52 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 8),
                 SwitchListTile(title: const Text('Считать в зарплате'), value: countInSalary, onChanged: (v) => setDialogState(() => countInSalary = v)),
                 const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
+                Row(
                   children: [
-                    const Color(0xFF90CAF9), const Color(0xFFCE93D8), const Color(0xFFFFCC80),
-                    const Color(0xFFEF9A9A), const Color(0xFFA5D6A7), const Color(0xFF80CBC4),
-                    const Color(0xFFFFF59D), const Color(0xFFBCAAA4),
-                  ].map((c) => GestureDetector(
-                    onTap: () => setDialogState(() => selectedColor = c),
-                    child: Container(
-                      width: 32, height: 32,
+                    Container(
+                      width: 40, height: 40,
                       decoration: BoxDecoration(
-                        color: c, shape: BoxShape.circle,
-                        border: selectedColor == c ? Border.all(color: Colors.black, width: 2) : null,
+                        color: selectedColor,
+                        shape: BoxShape.circle,
+                        border: Border.all(color: Colors.grey.shade400),
                       ),
                     ),
-                  )).toList(),
+                    const SizedBox(width: 12),
+                    TextButton.icon(
+                      onPressed: () async {
+                        Color tempColor = selectedColor;
+                        final picked = await showDialog<Color>(
+                          context: context,
+                          builder: (ctx) => AlertDialog(
+                            title: const Text('Выбор цвета'),
+                            content: SingleChildScrollView(
+                              child: ColorPicker(
+                                pickerColor: tempColor,
+                                onColorChanged: (c) => tempColor = c,
+                                enableAlpha: true,
+                                displayThumbColor: true,
+                                paletteType: PaletteType.hsvWithHue,
+                                labelTypes: const [],
+                                pickerAreaHeightPercent: 0.7,
+                              ),
+                            ),
+                            actions: [
+                              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
+                              TextButton(
+                                onPressed: () => Navigator.pop(ctx, tempColor),
+                                child: const Text('Выбрать'),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (picked != null) {
+                          setDialogState(() => selectedColor = picked);
+                        }
+                      },
+                      icon: const Icon(Icons.colorize, size: 20),
+                      label: const Text('Изменить цвет'),
+                    ),
+                  ],
                 ),
               ],
             ),
