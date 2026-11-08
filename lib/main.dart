@@ -494,6 +494,7 @@ class _HomeScreenState extends State<HomeScreen> {
       typeId: type.id,
       startTime: start,
       endTime: end,
+      breaks: List<BreakInterval>.from(type.breaks),
     );
   }
 
@@ -1842,7 +1843,6 @@ Widget _buildNoteRow(String key, Note note) {
     final rateController = TextEditingController(text: (shift.overrideRateValue ?? type.rateValue).toStringAsFixed(0));
     final coefOverController = TextEditingController(text: (shift.overrideCoefOvertime ?? type.coefOvertime).toString());
     final coefUnderController = TextEditingController(text: (shift.overrideCoefUndertime ?? type.coefUndertime).toString());
-    final breakController = TextEditingController(text: shift.breakMinutes.toString());
     RateType selectedRateType = shift.overrideRateType ?? type.rateType;
 
     showDialog(
@@ -1855,7 +1855,7 @@ Widget _buildNoteRow(String key, Note note) {
               mainAxisSize: MainAxisSize.min,
               children: [
                 DropdownButtonFormField<String>(
-                  value: selectedTypeId,
+                  initialValue: selectedTypeId,
                   decoration: const InputDecoration(labelText: 'Тип смены'),
                   items: _shiftTypes.map((t) => DropdownMenuItem(value: t.id, child: Text(t.name))).toList(),
                   onChanged: (value) {
@@ -1876,7 +1876,7 @@ Widget _buildNoteRow(String key, Note note) {
                 TextField(controller: rateController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Ставка')),
                 const SizedBox(height: 8),
                 DropdownButtonFormField<RateType>(
-                  value: selectedRateType,
+                  initialValue: selectedRateType,
                   decoration: const InputDecoration(labelText: 'Тип расчёта'),
                   items: RateType.values.map((t) => DropdownMenuItem(value: t, child: Text(t == RateType.perHour ? 'за час' : 'за смену'))).toList(),
                   onChanged: (value) { if (value != null) setDialogState(() => selectedRateType = value); },
@@ -1885,8 +1885,6 @@ Widget _buildNoteRow(String key, Note note) {
                 TextField(controller: coefOverController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Коэфф. переработки')),
                 const SizedBox(height: 8),
                 TextField(controller: coefUnderController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Коэфф. недоработки')),
-                const SizedBox(height: 8),
-                TextField(controller: breakController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Перерыв (мин)')),
               ],
             ),
           ),
@@ -1913,13 +1911,12 @@ Widget _buildNoteRow(String key, Note note) {
                     shift.overrideRateType = null;
                     shift.overrideCoefOvertime = null;
                     shift.overrideCoefUndertime = null;
-                    shift.breakMinutes = int.tryParse(breakController.text.trim()) ?? 0;
+
                   } else {
                     shift.overrideRateValue = double.tryParse(rateController.text.trim());
                     shift.overrideRateType = selectedRateType;
                     shift.overrideCoefOvertime = double.tryParse(coefOverController.text.trim());
                     shift.overrideCoefUndertime = double.tryParse(coefUnderController.text.trim());
-                    shift.breakMinutes = int.tryParse(breakController.text.trim()) ?? 0;
                   }
                 });
                 await _saveShifts();
@@ -2709,7 +2706,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Название')),
+                TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Название'), onChanged: (_) => setDialogState(() {})),
                 const SizedBox(height: 12),
                 Wrap(
                   spacing: 8, runSpacing: 8,
@@ -2938,6 +2935,110 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
+  Future<BreakInterval?> _showBreakEditDialog({
+    required BreakInterval? existing,
+    required int typeStartHour,
+    required int typeStartMinute,
+    required double typePlannedHours,
+    required List<BreakInterval> currentBreaks,
+  }) async {
+    final nameController = TextEditingController(text: existing?.name ?? '');
+    int startH = existing?.startHour ?? 12;
+    int startM = existing?.startMinute ?? 0;
+    int endH = existing?.endHour ?? 13;
+    int endM = existing?.endMinute ?? 0;
+    bool count = existing?.countInSalary ?? true;
+    String? error;
+
+    return showDialog<BreakInterval>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Text(existing == null ? 'Новый перерыв' : 'Редактировать перерыв'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Название'), onChanged: (_) => setDialogState(() => error = null)),
+                const SizedBox(height: 8),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Начало'),
+                  subtitle: Text('${startH.toString().padLeft(2, '0')}:${startM.toString().padLeft(2, '0')}'),
+                  trailing: const Icon(Icons.access_time),
+                  onTap: () async {
+                    final picked = await showTimePicker(context: context, initialTime: TimeOfDay(hour: startH, minute: startM));
+                    if (picked != null) setDialogState(() { startH = picked.hour; startM = picked.minute; error = null; });
+                  },
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Конец'),
+                  subtitle: Text('${endH.toString().padLeft(2, '0')}:${endM.toString().padLeft(2, '0')}'),
+                  trailing: const Icon(Icons.access_time),
+                  onTap: () async {
+                    final picked = await showTimePicker(context: context, initialTime: TimeOfDay(hour: endH, minute: endM));
+                    if (picked != null) setDialogState(() { endH = picked.hour; endM = picked.minute; error = null; });
+                  },
+                ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Учитывать в зарплате'),
+                  value: count,
+                  onChanged: (v) => setDialogState(() => count = v),
+                ),
+                if (error != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(error!, style: const TextStyle(color: Colors.red, fontSize: 12)),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
+            TextButton(
+              onPressed: nameController.text.trim().isEmpty ? null : () {
+                final name = nameController.text.trim();
+                final bs = startH * 60 + startM;
+                final be = endH * 60 + endM;
+                if (be <= bs) { setDialogState(() => error = 'Конец должен быть позже начала'); return; }
+                // Проверка в пределах смены типа
+                final typeStart = typeStartHour * 60 + typeStartMinute;
+                final typeEnd = typeStart + (typePlannedHours * 60).round();
+                if (bs < typeStart || be > typeEnd) {
+                  setDialogState(() => error = 'Перерыв должен быть внутри смены (${(typeStart ~/ 60).toString().padLeft(2, '0')}:${(typeStart % 60).toString().padLeft(2, '0')}–${(typeEnd ~/ 60).toString().padLeft(2, '0')}:${(typeEnd % 60).toString().padLeft(2, '0')})');
+                  return;
+                }
+                // Проверка пересечения с другими перерывами
+                for (final other in currentBreaks) {
+                  if (existing != null && other.id == existing.id) continue;
+                  final os = other.startMinutes;
+                  final oe = other.endMinutes;
+                  if (bs < oe && os < be) {
+                    setDialogState(() => error = 'Пересекается с «${other.name}»');
+                    return;
+                  }
+                }
+                final result = BreakInterval(
+                  id: existing?.id ?? 'break_${DateTime.now().microsecondsSinceEpoch}',
+                  name: name,
+                  startHour: startH,
+                  startMinute: startM,
+                  endHour: endH,
+                  endMinute: endM,
+                  countInSalary: count,
+                );
+                Navigator.pop(ctx, result);
+              },
+              child: const Text('Сохранить'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   void _showShiftTypeDialog(ShiftType? existing) {
     final nameController = TextEditingController(text: existing?.name ?? '');
     final letterController = TextEditingController(text: existing?.letter ?? '');
@@ -2950,6 +3051,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     Color selectedColor = existing?.color ?? const Color(0xFF90CAF9);
     int startHour = existing?.startHour ?? 8;
     int startMinute = existing?.startMinute ?? 0;
+    List<BreakInterval> breaks = List<BreakInterval>.from(existing?.breaks ?? []);
 
     showDialog(
       context: context,
@@ -2960,7 +3062,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Название')),
+                TextField(controller: nameController, decoration: const InputDecoration(labelText: 'Название'), onChanged: (_) => setDialogState(() {})),
                 const SizedBox(height: 8),
                 TextField(controller: letterController, maxLength: 1, decoration: const InputDecoration(labelText: 'Буква')),
                 TextField(controller: hoursController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Плановые часы')),
@@ -2997,6 +3099,82 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 TextField(controller: coefUnderController, keyboardType: TextInputType.number, decoration: const InputDecoration(labelText: 'Коэфф. недоработки')),
                 const SizedBox(height: 8),
                 SwitchListTile(title: const Text('Считать в зарплате'), value: countInSalary, onChanged: (v) => setDialogState(() => countInSalary = v)),
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('Перерывы', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.grey.shade700)),
+                ),
+                const SizedBox(height: 4),
+                if (breaks.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Text('Нет перерывов', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+                  )
+                else
+                  ...breaks.asMap().entries.map((e) {
+                    final b = e.value;
+                    final s = '${b.startHour.toString().padLeft(2, '0')}:${b.startMinute.toString().padLeft(2, '0')}';
+                    final en = '${b.endHour.toString().padLeft(2, '0')}:${b.endMinute.toString().padLeft(2, '0')}';
+                    return Card(
+                      margin: const EdgeInsets.symmetric(vertical: 2),
+                      child: InkWell(
+                        onTap: () async {
+                          final updated = await _showBreakEditDialog(
+                            existing: b,
+                            typeStartHour: startHour,
+                            typeStartMinute: startMinute,
+                            typePlannedHours: double.tryParse(hoursController.text) ?? 0,
+                            currentBreaks: breaks,
+                          );
+                          if (updated != null) {
+                            setDialogState(() {
+                              breaks.removeAt(e.key);
+                              breaks.add(updated);
+                              breaks.sort((a, c) => a.startMinutes.compareTo(c.startMinutes));
+                            });
+                          }
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          child: Row(
+                            children: [
+                              Expanded(
+                                child: Text('${b.name} $s–$en', style: const TextStyle(fontSize: 13)),
+                              ),
+                              IconButton(
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                                icon: const Icon(Icons.delete, color: Colors.red, size: 18),
+                                onPressed: () => setDialogState(() => breaks.removeAt(e.key)),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    );
+                  }),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: () async {
+                      final created = await _showBreakEditDialog(
+                        existing: null,
+                        typeStartHour: startHour,
+                        typeStartMinute: startMinute,
+                        typePlannedHours: double.tryParse(hoursController.text) ?? 0,
+                        currentBreaks: breaks,
+                      );
+                      if (created != null) {
+                        setDialogState(() {
+                          breaks.add(created);
+                          breaks.sort((a, c) => a.startMinutes.compareTo(c.startMinutes));
+                        });
+                      }
+                    },
+                    icon: const Icon(Icons.add, size: 18),
+                    label: const Text('Добавить перерыв'),
+                  ),
+                ),
                 const SizedBox(height: 8),
                 Row(
                   children: [
@@ -3051,9 +3229,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           actions: [
             TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
             TextButton(
-              onPressed: () {
+              onPressed: nameController.text.trim().isEmpty ? null : () {
                 final name = nameController.text.trim();
-                if (name.isEmpty) return;
                 final newType = ShiftType(
                   id: existing?.id ?? 'type_${DateTime.now().millisecondsSinceEpoch}',
                   name: name,
@@ -3067,6 +3244,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   coefUndertime: double.tryParse(coefUnderController.text) ?? 1.0,
                   startHour: startHour,
                   startMinute: startMinute,
+                  breaks: List<BreakInterval>.from(breaks),
                 );
                 setState(() {
                   if (existing == null) { _shiftTypes.add(newType); }

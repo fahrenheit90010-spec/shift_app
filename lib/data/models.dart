@@ -26,6 +26,7 @@ class ShiftType {
   final double coefUndertime;
   final int startHour;
   final int startMinute;
+  final List<BreakInterval> breaks;
 
   const ShiftType({
     required this.id, required this.name, required this.letter, required this.color,
@@ -33,6 +34,7 @@ class ShiftType {
     required this.rateValue, required this.rateType,
     required this.coefOvertime, required this.coefUndertime,
     this.startHour = 8, this.startMinute = 0,
+    this.breaks = const [],
   });
 
   static List<ShiftType> defaults() => [
@@ -49,6 +51,7 @@ class ShiftType {
     'rateValue': rateValue, 'rateType': rateType.index,
     'coefOvertime': coefOvertime, 'coefUndertime': coefUndertime,
     'startHour': startHour, 'startMinute': startMinute,
+    'breaks': breaks.map((b) => b.toJson()).toList(),
   };
 
   factory ShiftType.fromJson(Map<String, dynamic> json) => ShiftType(
@@ -62,6 +65,9 @@ class ShiftType {
     coefUndertime: (json['coefUndertime'] ?? 1.0).toDouble(),
     startHour: json['startHour'] ?? 8,
     startMinute: json['startMinute'] ?? 0,
+    breaks: (json['breaks'] as List?)
+        ?.map((e) => BreakInterval.fromJson(e as Map<String, dynamic>))
+        .toList() ?? const [],
   );
 }
 
@@ -72,7 +78,8 @@ class ShiftEntry {
   String typeId;
   DateTime startTime;
   DateTime endTime;
-  int breakMinutes;
+  List<BreakInterval> breaks;
+  bool overridden;
   double? overrideRateValue;
   RateType? overrideRateType;
   double? overrideCoefOvertime;
@@ -81,14 +88,28 @@ class ShiftEntry {
   ShiftEntry({
     required this.id,
     required this.typeId, required this.startTime, required this.endTime,
-    this.breakMinutes = 0,
+    List<BreakInterval>? breaks,
+    this.overridden = false,
     this.overrideRateValue, this.overrideRateType,
     this.overrideCoefOvertime, this.overrideCoefUndertime,
-  });
+  }) : breaks = breaks ?? [];
 
   double get actualHours {
-    final diff = endTime.difference(startTime).inMinutes - breakMinutes;
-    return diff > 0 ? diff / 60.0 : 0;
+    final totalMinutes = endTime.difference(startTime).inMinutes;
+    final total = totalMinutes == 0 ? 24 * 60 : totalMinutes;
+    final shiftStart = startTime.hour * 60 + startTime.minute;
+    final shiftEnd = shiftStart + total;
+    int breaksToSubtract = 0;
+    for (final b in breaks) {
+      if (!b.countInSalary) continue;
+      final overlapStart = b.startMinutes > shiftStart ? b.startMinutes : shiftStart;
+      final overlapEnd = b.endMinutes < shiftEnd ? b.endMinutes : shiftEnd;
+      if (overlapEnd > overlapStart) {
+        breaksToSubtract += overlapEnd - overlapStart;
+      }
+    }
+    final result = total - breaksToSubtract;
+    return result > 0 ? result / 60.0 : 0;
   }
 
   Map<String, dynamic> toJson() => {
@@ -96,7 +117,8 @@ class ShiftEntry {
     'typeId': typeId,
     'startTime': startTime.toIso8601String(),
     'endTime': endTime.toIso8601String(),
-    'breakMinutes': breakMinutes,
+    'breaks': breaks.map((b) => b.toJson()).toList(),
+    'overridden': overridden,
     'overrideRateValue': overrideRateValue,
     'overrideRateType': overrideRateType?.index,
     'overrideCoefOvertime': overrideCoefOvertime,
@@ -108,7 +130,10 @@ class ShiftEntry {
     typeId: json['typeId'] as String,
     startTime: DateTime.parse(json['startTime'] as String),
     endTime: DateTime.parse(json['endTime'] as String),
-    breakMinutes: (json['breakMinutes'] ?? 0) as int,
+    breaks: (json['breaks'] as List?)
+        ?.map((e) => BreakInterval.fromJson(e as Map<String, dynamic>))
+        .toList() ?? [],
+    overridden: (json['overridden'] as bool?) ?? false,
     overrideRateValue: (json['overrideRateValue'] as num?)?.toDouble(),
     overrideRateType: json['overrideRateType'] != null
         ? RateType.values[json['overrideRateType'] as int]
@@ -196,6 +221,51 @@ class ShiftTemplate {
     priority: json['priority'] ?? 1,
     isCustom: json['isCustom'] ?? false,
     fixedTypeId: json['fixedTypeId'],
+  );
+}
+
+// Перерыв в типе смены
+class BreakInterval {
+  final String id;
+  final String name;
+  final int startHour;
+  final int startMinute;
+  final int endHour;
+  final int endMinute;
+  final bool countInSalary;
+
+  const BreakInterval({
+    required this.id,
+    required this.name,
+    required this.startHour,
+    required this.startMinute,
+    required this.endHour,
+    required this.endMinute,
+    this.countInSalary = true,
+  });
+
+  int get startMinutes => startHour * 60 + startMinute;
+  int get endMinutes => endHour * 60 + endMinute;
+  int get durationMinutes => endMinutes - startMinutes;
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'startHour': startHour,
+    'startMinute': startMinute,
+    'endHour': endHour,
+    'endMinute': endMinute,
+    'countInSalary': countInSalary,
+  };
+
+  factory BreakInterval.fromJson(Map<String, dynamic> json) => BreakInterval(
+    id: json['id'] as String,
+    name: json['name'] as String,
+    startHour: json['startHour'] as int,
+    startMinute: json['startMinute'] as int,
+    endHour: json['endHour'] as int,
+    endMinute: json['endMinute'] as int,
+    countInSalary: (json['countInSalary'] as bool?) ?? true,
   );
 }
 
