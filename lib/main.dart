@@ -310,6 +310,53 @@ class _HomeScreenState extends State<HomeScreen> {
     await _saveClosedMonths();
   }
 
+  int _countShiftsInMonth(int year, int month) {
+    return _shifts.where((s) {
+      final d = _salaryDateFor(s);
+      return d.year == year && d.month == month;
+    }).length;
+  }
+
+  int _countNotesInMonth(int year, int month) {
+    final prefix = '$year-${month.toString().padLeft(2, '0')}';
+    return _notes.entries
+        .where((e) => e.key.startsWith(prefix))
+        .fold<int>(0, (sum, e) => sum + e.value.length);
+  }
+
+  Future<void> _clearMonth(int year, int month, bool deleteNotes) async {
+    final toRemoveShifts = _shifts.where((s) {
+      final d = _salaryDateFor(s);
+      return d.year == year && d.month == month;
+    }).map((s) => s.id).toSet();
+
+    setState(() {
+      _shifts.removeWhere((s) => toRemoveShifts.contains(s.id));
+    });
+    await _saveShifts();
+
+    if (deleteNotes) {
+      final prefix = '$year-${month.toString().padLeft(2, '0')}';
+      final keysToRemove = _notes.keys.where((k) => k.startsWith(prefix)).toList();
+      for (final k in keysToRemove) {
+        for (final n in _notes[k] ?? []) {
+          for (final p in n.photoPaths) {
+            try {
+              final f = File(p);
+              if (await f.exists()) await f.delete();
+            } catch (_) {}
+          }
+        }
+      }
+      setState(() {
+        for (final k in keysToRemove) {
+          _notes.remove(k);
+        }
+      });
+      await _saveNotes();
+    }
+  }
+
   String _dateKey(DateTime day) => '${day.year}-${day.month.toString().padLeft(2, '0')}-${day.day.toString().padLeft(2, '0')}';
 
   ShiftType? _getShiftType(String id) {
@@ -488,6 +535,9 @@ class _HomeScreenState extends State<HomeScreen> {
         onClose: (y, m) => _closeMonth(y, m),
         onUnfreeze: (y, m) => _unfreezeMonth(y, m),
         computeStats: (y, m) => _computeStats(y, m),
+        countShiftsInMonth: _countShiftsInMonth,
+        countNotesInMonth: _countNotesInMonth,
+        onClearMonth: _clearMonth,
       ),
     ));
   }
@@ -556,9 +606,120 @@ class _HomeScreenState extends State<HomeScreen> {
           });
           await _saveGlobalSettings();
         },
-        onGenerateTemplate: _generateFromTemplate,
       ),
     ));
+  }
+  void _openTemplatePickerForDay(DateTime day) {
+    if (_templates.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Нет доступных шаблонов')),
+      );
+      return;
+    }
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: _bgColor,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Text(
+                'Шаблон с ${day.day.toString().padLeft(2, '0')}.${day.month.toString().padLeft(2, '0')}.${day.year}',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: _textColor),
+              ),
+            ),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: _templates.map((t) => ListTile(
+                  leading: Icon(Icons.play_arrow, color: _textColor),
+                  title: Text(t.name, style: TextStyle(color: _textColor)),
+                  subtitle: Text(t.description, style: TextStyle(color: _subtextColor, fontSize: 12)),
+                  trailing: t.isCustom
+                      ? Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(color: Colors.blue.shade100, borderRadius: BorderRadius.circular(4)),
+                          child: const Text('свой', style: TextStyle(fontSize: 10)),
+                        )
+                      : null,
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _showTemplateConfigForDay(t, day);
+                  },
+                )).toList(),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showTemplateConfigForDay(ShiftTemplate template, DateTime day) {
+    String? typeId = _shiftTypes.isNotEmpty ? _shiftTypes.first.id : null;
+    int months = 1;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Text('Шаблон «${template.name}»'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Дата начала'),
+                  subtitle: Text('${day.day.toString().padLeft(2, '0')}.${day.month.toString().padLeft(2, '0')}.${day.year}'),
+                ),
+                const SizedBox(height: 8),
+                if (!template.isCustom)
+                  DropdownButtonFormField<String>(
+                    value: typeId,
+                    decoration: const InputDecoration(labelText: 'Тип смены для рабочих дней'),
+                    items: _shiftTypes.map((t) => DropdownMenuItem(value: t.id, child: Text(t.name))).toList(),
+                    onChanged: (value) {
+                      if (value != null) setDialogState(() => typeId = value);
+                    },
+                  ),
+                if (!template.isCustom) const SizedBox(height: 8),
+                DropdownButtonFormField<int>(
+                  value: months,
+                  decoration: const InputDecoration(labelText: 'Период'),
+                  items: const [
+                    DropdownMenuItem(value: 1, child: Text('1 месяц')),
+                    DropdownMenuItem(value: 2, child: Text('2 месяца')),
+                    DropdownMenuItem(value: 3, child: Text('3 месяца')),
+                    DropdownMenuItem(value: 6, child: Text('6 месяцев (полгода)')),
+                    DropdownMenuItem(value: 12, child: Text('12 месяцев (год)')),
+                  ],
+                  onChanged: (value) { if (value != null) setDialogState(() => months = value); },
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Отмена')),
+            TextButton(
+              onPressed: () {
+                if (!template.isCustom && typeId == null) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Выбери тип смены')),
+                  );
+                  return;
+                }
+                Navigator.pop(ctx);
+                _generateFromTemplate(template, day, typeId ?? 'day', months);
+              },
+              child: const Text('Создать'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _generateFromTemplate(ShiftTemplate template, DateTime startDate, String typeId, int months) async {
@@ -804,6 +965,12 @@ class _HomeScreenState extends State<HomeScreen> {
           Wrap(
             spacing: 12, runSpacing: 12,
             children: [..._shiftTypes.map((type) => _buildShiftCircle(type)), _buildAddCircle()],
+          ),
+          const SizedBox(height: 8),
+          TextButton.icon(
+            onPressed: () => _openTemplatePickerForDay(_selectedDay!),
+            icon: const Icon(Icons.playlist_add, color: Colors.blue, size: 20),
+            label: const Text('Применить шаблон', style: TextStyle(color: Colors.blue)),
           ),
         ],
       ),
@@ -1321,25 +1488,41 @@ Widget _buildNoteRow(String key, Note note) {
       context: context,
       builder: (context) => SimpleDialog(
         title: const Text('Добавить смену'),
-        children: _shiftTypes.map((type) {
-          return SimpleDialogOption(
-            onPressed: () async {
+        children: [
+          ..._shiftTypes.map((type) {
+            return SimpleDialogOption(
+              onPressed: () async {
+                Navigator.pop(context);
+                await _addShiftWithConflictCheck(type, _selectedDay!);
+              },
+              child: Row(
+                children: [
+                  Container(
+                    width: 32, height: 32,
+                    decoration: BoxDecoration(color: type.color, shape: BoxShape.circle),
+                    child: Center(child: Text(type.letter, style: const TextStyle(fontWeight: FontWeight.bold))),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(type.name),
+                ],
+              ),
+            );
+          }),
+          const Divider(height: 1),
+          SimpleDialogOption(
+            onPressed: () {
               Navigator.pop(context);
-              await _addShiftWithConflictCheck(type, _selectedDay!);
+              _openTemplatePickerForDay(_selectedDay!);
             },
             child: Row(
-              children: [
-                Container(
-                  width: 32, height: 32,
-                  decoration: BoxDecoration(color: type.color, shape: BoxShape.circle),
-                  child: Center(child: Text(type.letter, style: const TextStyle(fontWeight: FontWeight.bold))),
-                ),
-                const SizedBox(width: 12),
-                Text(type.name),
+              children: const [
+                Icon(Icons.playlist_add, color: Colors.blue),
+                SizedBox(width: 12),
+                Text('Применить шаблон', style: TextStyle(color: Colors.blue)),
               ],
             ),
-          );
-        }).toList(),
+          ),
+        ],
       ),
     );
   }
@@ -1957,12 +2140,17 @@ class StatsScreen extends StatefulWidget {
   final Future<void> Function(int year, int month) onClose;
   final Future<void> Function(int year, int month) onUnfreeze;
   final Map<String, dynamic> Function(int year, int month) computeStats;
+  final int Function(int year, int month) countShiftsInMonth;
+  final int Function(int year, int month) countNotesInMonth;
+  final Future<void> Function(int year, int month, bool deleteNotes) onClearMonth;
 
   const StatsScreen({
     super.key,
     required this.initialYear, required this.initialMonth,
     required this.isMonthClosed, required this.getClosedRecord,
     required this.onClose, required this.onUnfreeze, required this.computeStats,
+    required this.countShiftsInMonth, required this.countNotesInMonth,
+    required this.onClearMonth,
   });
 
   @override
@@ -1996,6 +2184,56 @@ class _StatsScreenState extends State<StatsScreen> {
     setState(() {
       if (_month == 12) { _month = 1; _year++; } else { _month++; }
     });
+  }
+
+  Future<void> _openClearMonthDialog() async {
+    final shiftsCount = widget.countShiftsInMonth(_year, _month);
+    final notesCount = widget.countNotesInMonth(_year, _month);
+
+    if (shiftsCount == 0 && notesCount == 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Нет данных за месяц')),
+      );
+      return;
+    }
+
+    bool deleteNotes = false;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Text('Очистить ${_monthNames[_month - 1]} $_year?'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Будет удалено: $shiftsCount смен.'),
+              if (notesCount > 0) ...[
+                const SizedBox(height: 12),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text('Удалить также заметки ($notesCount)'),
+                  value: deleteNotes,
+                  onChanged: (v) => setDialogState(() => deleteNotes = v ?? false),
+                  controlAffinity: ListTileControlAffinity.leading,
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Очистить', style: TextStyle(color: Colors.red)),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (confirmed != true) return;
+    await widget.onClearMonth(_year, _month, deleteNotes);
+    if (mounted) setState(() {});
   }
 
   @override
@@ -2048,13 +2286,19 @@ class _StatsScreenState extends State<StatsScreen> {
           const Divider(height: 32),
           _buildStatRow('Сумма', '${(stats['totalAmount'] as double).toStringAsFixed(2)} ₽', isTotal: true),
           const SizedBox(height: 24),
-          if (!isClosed)
+          if (!isClosed) ...[
             ElevatedButton.icon(
               onPressed: () async { await widget.onClose(_year, _month); setState(() {}); },
               icon: const Icon(Icons.lock),
               label: const Text('Закрыть месяц'),
-            )
-          else
+            ),
+            const SizedBox(height: 8),
+            TextButton.icon(
+              onPressed: _openClearMonthDialog,
+              icon: const Icon(Icons.delete_sweep, color: Colors.red),
+              label: const Text('Очистить месяц', style: TextStyle(color: Colors.red)),
+            ),
+          ] else
             OutlinedButton.icon(
               onPressed: () async { await widget.onUnfreeze(_year, _month); setState(() {}); },
               icon: const Icon(Icons.lock_open),
@@ -2094,7 +2338,6 @@ class SettingsScreen extends StatefulWidget {
   final ValueChanged<List<ShiftType>> onShiftTypesChanged;
   final ValueChanged<List<ShiftTemplate>> onTemplatesChanged;
   final Function(double, double, bool) onGlobalSettingsChanged;
-  final Future<void> Function(ShiftTemplate, DateTime, String, int) onGenerateTemplate;
 
   const SettingsScreen({
     super.key,
@@ -2102,7 +2345,7 @@ class SettingsScreen extends StatefulWidget {
     required this.globalCoefOvertime, required this.globalCoefUndertime,
     required this.salaryFromStart,
     required this.onThemeChanged, required this.onShiftTypesChanged, required this.onTemplatesChanged,
-    required this.onGlobalSettingsChanged, required this.onGenerateTemplate,
+    required this.onGlobalSettingsChanged,
   });
 
   @override
@@ -2133,45 +2376,93 @@ class _SettingsScreenState extends State<SettingsScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          const Text('Тема', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          _buildThemeTile('Светлая', ThemeMode.light),
-          _buildThemeTile('Тёмная', ThemeMode.dark),
-          _buildThemeTile('Системная', ThemeMode.system),
-          const SizedBox(height: 24),
-          const Text('Типы смен', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          ..._shiftTypes.map((t) => _buildShiftTypeTile(t)),
-          const SizedBox(height: 8),
-          ElevatedButton.icon(onPressed: _addShiftType, icon: const Icon(Icons.add), label: const Text('Добавить тип смены')),
-          const SizedBox(height: 24),
-          const Text('Шаблоны смен', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          ..._templates.map((t) => _buildTemplateTile(t)),
-          const SizedBox(height: 8),
-          ElevatedButton.icon(onPressed: _createCustomTemplate, icon: const Icon(Icons.add), label: const Text('Создать свой шаблон')),
-          const SizedBox(height: 24),
-          const Text('Коэффициенты (глобальные)', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          _buildNumberField('Переработка', _coefOver, (v) { setState(() => _coefOver = v); widget.onGlobalSettingsChanged(_coefOver, _coefUnder, _salaryFromStart); }),
-          _buildNumberField('Недоработка', _coefUnder, (v) { setState(() => _coefUnder = v); widget.onGlobalSettingsChanged(_coefOver, _coefUnder, _salaryFromStart); }),
-          const SizedBox(height: 24),
-          const Text('Зарплата', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+          Card(
+            child: ExpansionTile(
+              title: const Text('Тема'),
+              subtitle: Text(_themeLabel(widget.themeMode)),
+              children: [
+                _buildThemeTile('Светлая', ThemeMode.light),
+                _buildThemeTile('Тёмная', ThemeMode.dark),
+                _buildThemeTile('Системная', ThemeMode.system),
+              ],
+            ),
+          ),
           const SizedBox(height: 8),
           Card(
-            child: SwitchListTile(
-              title: const Text('Считать от начала смены'),
-              subtitle: const Text('Если выключено — от конца смены'),
-              value: _salaryFromStart,
-              onChanged: (v) {
-                setState(() => _salaryFromStart = v);
-                widget.onGlobalSettingsChanged(_coefOver, _coefUnder, _salaryFromStart);
-              },
+            child: ExpansionTile(
+              title: const Text('Типы смен'),
+              children: [
+                ..._shiftTypes.map((t) => _buildShiftTypeTile(t)),
+                Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: ElevatedButton.icon(onPressed: _addShiftType, icon: const Icon(Icons.add), label: const Text('Добавить тип смены')),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: ExpansionTile(
+              title: const Text('Шаблоны смен'),
+              children: [
+                ..._templates.map((t) => _buildTemplateTile(t)),
+                Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: ElevatedButton.icon(onPressed: _createCustomTemplate, icon: const Icon(Icons.add), label: const Text('Создать свой шаблон')),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: ExpansionTile(
+              title: const Text('Коэффициенты (глобальные)'),
+              subtitle: Text('Переработка ${_coefOver.toStringAsFixed(2)}, недоработка ${_coefUnder.toStringAsFixed(2)}'),
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: Column(
+                    children: [
+                      _buildNumberField('Переработка', _coefOver, (v) { setState(() => _coefOver = v); widget.onGlobalSettingsChanged(_coefOver, _coefUnder, _salaryFromStart); }),
+                      _buildNumberField('Недоработка', _coefUnder, (v) { setState(() => _coefUnder = v); widget.onGlobalSettingsChanged(_coefOver, _coefUnder, _salaryFromStart); }),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          Card(
+            child: ExpansionTile(
+              title: const Text('Зарплата'),
+              subtitle: Text(_salaryFromStart ? 'От начала смены' : 'От конца смены'),
+              children: [
+                SwitchListTile(
+                  title: const Text('Считать от начала смены'),
+                  subtitle: const Text('Если выключено — от конца смены'),
+                  value: _salaryFromStart,
+                  onChanged: (v) {
+                    setState(() => _salaryFromStart = v);
+                    widget.onGlobalSettingsChanged(_coefOver, _coefUnder, _salaryFromStart);
+                  },
+                ),
+              ],
             ),
           ),
         ],
       ),
     );
+  }
+
+  String _themeLabel(ThemeMode mode) {
+    switch (mode) {
+      case ThemeMode.light:
+        return 'Светлая';
+      case ThemeMode.dark:
+        return 'Тёмная';
+      case ThemeMode.system:
+        return 'Системная';
+    }
   }
 
   Widget _buildThemeTile(String label, ThemeMode mode) {
@@ -2219,7 +2510,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            IconButton(icon: const Icon(Icons.play_arrow), onPressed: () => _showGenerateDialog(template)),
             if (template.isCustom)
               IconButton(icon: const Icon(Icons.edit), onPressed: () => _editCustomTemplate(template)),
             if (template.isCustom)
@@ -2500,79 +2790,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 Navigator.pop(context);
               },
               child: const Text('Сохранить'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _showGenerateDialog(ShiftTemplate template) {
-    DateTime startDate = DateTime.now();
-    String? typeId = _shiftTypes.isNotEmpty ? _shiftTypes.first.id : null;
-    int months = 1;
-
-    showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: Text('Шаблон «${template.name}»'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                ListTile(
-                  title: const Text('Дата начала'),
-                  subtitle: Text('${startDate.day}.${startDate.month.toString().padLeft(2, '0')}.${startDate.year}'),
-                  trailing: const Icon(Icons.calendar_today),
-                  onTap: () async {
-                    final picked = await showDatePicker(
-                      context: context,
-                      initialDate: startDate,
-                      firstDate: DateTime(2020),
-                      lastDate: DateTime(2030),
-                    );
-                    if (picked != null) setDialogState(() => startDate = picked);
-                  },
-                ),
-                const SizedBox(height: 8),
-                if (!template.isCustom)
-                  DropdownButtonFormField<String>(
-                    value: typeId,
-                    decoration: const InputDecoration(labelText: 'Тип смены для рабочих дней'),
-                    items: _shiftTypes.map((t) => DropdownMenuItem(value: t.id, child: Text(t.name))).toList(),
-                    onChanged: (value) {
-                      if (value != null) setDialogState(() => typeId = value);
-                    },
-                  ),
-                if (!template.isCustom) const SizedBox(height: 8),
-                DropdownButtonFormField<int>(
-                  value: months,
-                  decoration: const InputDecoration(labelText: 'Период'),
-                  items: const [
-                    DropdownMenuItem(value: 1, child: Text('1 месяц')),
-                    DropdownMenuItem(value: 2, child: Text('2 месяца')),
-                    DropdownMenuItem(value: 3, child: Text('3 месяца')),
-                  ],
-                  onChanged: (value) { if (value != null) setDialogState(() => months = value); },
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context), child: const Text('Отмена')),
-            TextButton(
-              onPressed: () {
-                if (!template.isCustom && typeId == null) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Выбери тип смены')),
-                  );
-                  return;
-                }
-                Navigator.pop(context);
-                widget.onGenerateTemplate(template, startDate, typeId ?? 'day', months);
-              },
-              child: const Text('Создать'),
             ),
           ],
         ),
